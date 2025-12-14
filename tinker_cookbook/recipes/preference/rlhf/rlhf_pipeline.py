@@ -3,6 +3,8 @@ import logging
 import os
 
 import chz
+from dotenv import load_dotenv
+
 from tinker_cookbook import checkpoint_utils, model_info
 from tinker_cookbook.preference.comparison_policy_evaluator import ComparisonEvaluator
 from tinker_cookbook.preference.preference_datasets import ChatDatasetBuilderFromComparisons
@@ -13,6 +15,8 @@ from tinker_cookbook.renderers import TrainOnWhat
 from tinker_cookbook.rl import preference_envs, train
 from tinker_cookbook.supervised import train as supervised_train
 from tinker_cookbook.supervised.types import ChatDatasetBuilderCommonConfig
+
+load_dotenv(override=True)
 
 logger = logging.getLogger(__name__)
 
