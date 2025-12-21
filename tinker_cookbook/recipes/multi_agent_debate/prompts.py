@@ -3,7 +3,6 @@
 import re
 from dataclasses import dataclass
 
-
 AGENT_SYSTEM_PROMPT = """You are Agent {agent_id} in a multi-agent collaborative discussion to solve open-ended questions.
 
 Your goal: Provide high-quality reasoning, evaluate others constructively, and work toward consensus.
@@ -11,60 +10,33 @@ Your goal: Provide high-quality reasoning, evaluate others constructively, and w
 RESPONSE FORMAT (use exact XML tags):
 
 <thinking>
-Your internal reasoning process - analyze the question, review what others said, plan your response.
+Your internal reasoning process.
 </thinking>
 
 <solution>
-Your proposed answer or contribution. Build on the discussion and provide clear reasoning.
+Your proposed answer or contribution.
 </solution>
 
 <evaluation>
-Assess other agents' recent contributions. Be specific about strengths and weaknesses.
-- Agent 0: [your assessment]
-- Agent 1: [your assessment]
-(Skip evaluating yourself and agents who haven't spoken yet)
+Assess other agents' recent contributions.
 </evaluation>
 
-<consensus>YES</consensus>
-OR
-<consensus>NO</consensus>
+<comparison>
+Compare the solutions of other agents from the most recent round.
+For every pair of agents (excluding yourself), determine who provided the better contribution.
+Format: "Agent X > Agent Y" or "Agent X = Agent Y" (if tied).
+Example:
+Agent 1 > Agent 2
+Agent 3 > Agent 1
+</comparison>
 
-<consensus_reason>
-If YES: Explain why the group has reached a satisfactory answer.
-If NO: Explain what key gaps or disagreements remain.
-</consensus_reason>
+<consensus>YES/NO</consensus>
+<consensus_reason>...</consensus_reason>
 
 IMPORTANT:
 - Use EXACTLY these tags in this order
 - For consensus, write ONLY "YES" or "NO" inside the tag
 - Be honest about consensus - only say YES when truly satisfied with the answer
-"""
-
-
-PAIRWISE_COMPARISON_PROMPT = """Compare two agents' contributions in a collaborative discussion.
-
-QUESTION: {question}
-
-RECENT CONTEXT (last {k} turns):
-{conversation_history}
-
-AGENT {agent_a_id}'s CONTRIBUTION:
-{agent_a_solution}
-
-AGENT {agent_b_id}'s CONTRIBUTION:
-{agent_b_solution}
-
-Evaluate which contribution is better based on:
-- Reasoning quality and correctness
-- Insight and constructiveness
-- How well it advances the discussion
-
-Respond with EXACTLY one of:
-AGENT_{agent_a_id}_BETTER
-AGENT_{agent_b_id}_BETTER
-TIE
-
-(Write only the verdict, no explanation needed)
 """
 
 
@@ -77,6 +49,7 @@ class ParsedResponse:
     evaluation: str
     consensus_reached: bool
     consensus_reason: str
+    comparisons: list[tuple[int, int]]  # List of (winner_id, loser_id) tuples
     raw_response: str
 
 
@@ -93,26 +66,37 @@ def parse_agent_response(response: str) -> ParsedResponse:
         ValueError if the response doesn't match expected format
     """
     # Extract thinking (optional - may not always be present)
-    thinking_match = re.search(r'<thinking>(.*?)</thinking>', response, re.DOTALL)
+    thinking_match = re.search(r"<thinking>(.*?)</thinking>", response, re.DOTALL)
     thinking = thinking_match.group(1).strip() if thinking_match else ""
 
     # Extract solution (required)
-    solution_match = re.search(r'<solution>(.*?)</solution>', response, re.DOTALL)
+    solution_match = re.search(r"<solution>(.*?)</solution>", response, re.DOTALL)
     if not solution_match:
         raise ValueError(f"Missing <solution> tag in response: {response[:200]}")
     solution = solution_match.group(1).strip()
 
     # Extract evaluation (required)
-    evaluation_match = re.search(r'<evaluation>(.*?)</evaluation>', response, re.DOTALL)
+    evaluation_match = re.search(r"<evaluation>(.*?)</evaluation>", response, re.DOTALL)
     if not evaluation_match:
         raise ValueError(f"Missing <evaluation> tag in response: {response[:200]}")
     evaluation = evaluation_match.group(1).strip()
 
     # Extract consensus (required)
-    consensus_match = re.search(r'<consensus>(.*?)</consensus>', response, re.DOTALL | re.IGNORECASE)
+    consensus_match = re.search(
+        r"<consensus>(.*?)</consensus>", response, re.DOTALL | re.IGNORECASE
+    )
     if not consensus_match:
         raise ValueError(f"Missing <consensus> tag in response: {response[:200]}")
     consensus_text = consensus_match.group(1).strip().upper()
+
+    comparisons = []
+    comp_match = re.search(r"<comparison>(.*?)</comparison>", response, re.DOTALL | re.IGNORECASE)
+    if comp_match:
+        content = comp_match.group(1).strip()
+        # Regex to find "Agent A > Agent B"
+        pairs = re.findall(r"Agent\s+(\d+)\s*([>=])\s*Agent\s+(\d+)", content)
+        for winner, loser in pairs:
+            comparisons.append((int(winner), int(loser)))
 
     # Parse YES/NO
     if "YES" in consensus_text:
@@ -124,7 +108,7 @@ def parse_agent_response(response: str) -> ParsedResponse:
         consensus_reached = False
 
     # Extract consensus reasoning (required)
-    reason_match = re.search(r'<consensus_reason>(.*?)</consensus_reason>', response, re.DOTALL)
+    reason_match = re.search(r"<consensus_reason>(.*?)</consensus_reason>", response, re.DOTALL)
     if not reason_match:
         raise ValueError(f"Missing <consensus_reason> tag in response: {response[:200]}")
     consensus_reason = reason_match.group(1).strip()
@@ -135,6 +119,7 @@ def parse_agent_response(response: str) -> ParsedResponse:
         evaluation=evaluation,
         consensus_reached=consensus_reached,
         consensus_reason=consensus_reason,
+        comparisons=comparisons,
         raw_response=response,
     )
 
@@ -165,9 +150,7 @@ def parse_pairwise_comparison(response: str, agent_a_id: int, agent_b_id: int) -
 
 
 def format_conversation_history(
-    agent_responses: list[list[ParsedResponse]],
-    num_agents: int,
-    k_turns: int
+    agent_responses: list[list[ParsedResponse]], num_agents: int, k_turns: int
 ) -> str:
     """Format the last K turns of conversation history.
 

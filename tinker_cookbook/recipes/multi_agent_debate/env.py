@@ -23,11 +23,8 @@ from tinker_cookbook.tokenizer_utils import get_tokenizer
 
 from .prompts import (
     AGENT_SYSTEM_PROMPT,
-    PAIRWISE_COMPARISON_PROMPT,
     ParsedResponse,
-    format_conversation_history,
     parse_agent_response,
-    parse_pairwise_comparison,
 )
 
 # Stop when we see the closing tag of the last required field
@@ -125,7 +122,6 @@ class MultiAgentDebateEnv(Env):
     agent_id: int
     coordinator: MultiAgentCoordinator
     renderer: Renderer
-    completer_for_comparisons: TinkerMessageCompleter
     self_play: bool
     opponent_policies: list[TinkerMessageCompleter] | None = None
 
@@ -251,11 +247,16 @@ class MultiAgentDebateEnv(Env):
         # Wait for next turn
         await self.wait_for_turn()
 
-        # Compute reward if round just completed
-        reward = 0.0
-        if self.coordinator.state.current_turn % self.coordinator.state.num_agents == 0:
-            # Round completed, compute pairwise comparison rewards
-            reward = await self.compute_reward_from_comparisons()
+        # Compute reward
+        # we are at the start of the next turn (or end of the episode), we should calculate the reward for the last turn
+        # should we waited, other agents have now spoken and provided their <comparison> votes
+        peer_reward = self.compute_reward_from_comparisons()
+
+        outcome_reward = 0.0
+        if self.coordinator.state.consensus_reached:
+            outcome_reward = 1.0  # Reward for reaching consensus
+
+        reward = peer_reward + outcome_reward
 
         return StepResult(
             reward=reward,
@@ -284,68 +285,59 @@ class MultiAgentDebateEnv(Env):
         Returns:
             Win-rate for this agent (proportion of pairwise comparisons won)
         """
+        responses = self.coordinator.state.agent_responses
         num_agents = self.coordinator.state.num_agents
-        k_turns = num_agents  # Compare last K turns where K = number of agents
 
-        if len(self.coordinator.state.agent_responses) == 0:
+        target_round_idx = -1
+        for r_idx in range(len(responses) - 1, -1, -1):
+            if len(responses[r_idx]) > self.agent_id:
+                target_round_idx = r_idx
+                break
+
+        if target_round_idx < 0:
             return 0.0
 
-        # Get this agent's latest solution
-        latest_round_idx = len(self.coordinator.state.agent_responses) - 1
-        if self.agent_id >= len(self.coordinator.state.agent_responses[latest_round_idx]):
-            return 0.0
+        # We look for votes in the turns that followed my submission.
+        # Who votes? Everyone else.
+        # Where are their votes?
+        # 1. Agents who spoke AFTER me in the SAME round (target_round_idx).
+        # 2. Agents who spoke BEFORE me in the NEXT round (target_round_idx + 1).
 
-        my_solution = self.coordinator.state.agent_responses[latest_round_idx][
-            self.agent_id
-        ].solution
-
-        # Format conversation history
-        conv_history = format_conversation_history(
-            self.coordinator.state.agent_responses, num_agents, k_turns
-        )
-
-        # Compare against each other agent
         wins = 0
         total_comparisons = 0
 
-        for other_agent_id in range(num_agents):
-            if other_agent_id == self.agent_id:
+        for other_id in range(num_agents):
+            if other_id == self.agent_id:
                 continue
 
-            if other_agent_id >= len(self.coordinator.state.agent_responses[latest_round_idx]):
-                continue
+            vote_source_response = None
 
-            other_solution = self.coordinator.state.agent_responses[latest_round_idx][
-                other_agent_id
-            ].solution
+            # Case 1: They spoke after me in the same round
+            if other_id > self.agent_id:
+                if len(responses[target_round_idx]) > other_id:
+                    vote_source_response = responses[target_round_idx][other_id]
 
-            # Prompt for pairwise comparison
-            comparison_prompt = PAIRWISE_COMPARISON_PROMPT.format(
-                question=self.coordinator.state.question,
-                k=k_turns,
-                conversation_history=conv_history,
-                agent_a_id=self.agent_id,
-                agent_b_id=other_agent_id,
-                agent_a_solution=my_solution,
-                agent_b_solution=other_solution,
-            )
+            # Case 2: They spoke before me in the next round
+            # (Note: responses might not have the next round yet if we are the last agent and game ended,
+            #  but usually step() waits until our NEXT turn, so next round exists partially)
+            elif other_id < self.agent_id:
+                if len(responses) > target_round_idx + 1:
+                    if len(responses[target_round_idx + 1]) > other_id:
+                        vote_source_response = responses[target_round_idx + 1][other_id]
 
-            messages: list[Message] = [{"role": "user", "content": comparison_prompt}]
+            if vote_source_response:
+                # Check their comparisons
+                for agent_a, op, agent_b in vote_source_response.comparisons:
+                    if agent_a == self.agent_id or agent_b == self.agent_id:
+                        total_comparisons += 1
 
-            # Use the completer to get comparison
-            response = await self.completer_for_comparisons(messages)
-            response_text = ensure_text(response["content"])
+                        if op == ">":
+                            if agent_a == self.agent_id:
+                                wins += 1
+                        elif op == "=":
+                            # Tie
+                            wins += 0.5
 
-            result = parse_pairwise_comparison(response_text, self.agent_id, other_agent_id)
-
-            if f"AGENT_{self.agent_id}_BETTER" in result:
-                wins += 1
-            elif "TIE" in result:
-                wins += 0.5
-
-            total_comparisons += 1
-
-        # Return win-rate
         if total_comparisons == 0:
             return 0.0
 
@@ -364,7 +356,6 @@ class MultiAgentEnvGroupBuilder(EnvGroupBuilder):
     opponent_policies: list[TinkerMessageCompleter] | None = None
     model_name: str | None = None
     base_url: str | None = None
-    comparison_sampling_client: tinker.SamplingClient | None = None
 
     def set_comparison_sampling_client(self, sampling_client: tinker.SamplingClient) -> None:
         """Use the current policy's sampling client for pairwise comparisons."""
@@ -389,7 +380,6 @@ class MultiAgentEnvGroupBuilder(EnvGroupBuilder):
     async def make_envs(self) -> Sequence[Env]:
         """Create a group of environments for a multi-agent debate."""
         question = self.questions[self.question_index % len(self.questions)]
-        completer_for_comparisons = self._build_comparison_completer()
 
         if self.self_play:
             # All agents share the same coordinator
@@ -399,7 +389,6 @@ class MultiAgentEnvGroupBuilder(EnvGroupBuilder):
                     agent_id=i,
                     coordinator=coordinator,
                     renderer=self.renderer,
-                    completer_for_comparisons=completer_for_comparisons,
                     self_play=True,
                     opponent_policies=None,
                 )
@@ -415,7 +404,6 @@ class MultiAgentEnvGroupBuilder(EnvGroupBuilder):
                         agent_id=i,
                         coordinator=coordinator,
                         renderer=self.renderer,
-                        completer_for_comparisons=completer_for_comparisons,
                         self_play=False,
                         opponent_policies=self.opponent_policies,
                     )
