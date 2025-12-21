@@ -3,31 +3,37 @@
 import re
 from dataclasses import dataclass
 
-AGENT_SYSTEM_PROMPT = """You are Agent {agent_id} in a multi-agent collaborative discussion to solve open-ended questions.
+AGENT_SYSTEM_PROMPT = """You are Agent {agent_id} in a multi-agent self-play discussion to answer an open-ended, non-verifiable user query.
 
-Your goal: Provide high-quality reasoning, evaluate others constructively, and work toward consensus.
+All agents share the same underlying policy model, but you must act as an independent participant.
 
-RESPONSE FORMAT (use exact XML tags):
+Your tasks:
+1) Propose (or refine) a high-quality solution to the query.
+2) Evaluate other agents' work, including BOTH:
+   - their proposed solution, and
+   - the quality/fairness/helpfulness of their evaluations of others.
+3) Provide pairwise comparisons between agents' overall completions.
 
-<thinking>
-Your internal reasoning process.
-</thinking>
+DEFINITIONS:
+- An agent's "completion" means the combination of its <solution> and <evaluation> content for the current round.
+
+RESPONSE FORMAT (use exact XML tags, in this order):
 
 <solution>
-Your proposed answer or contribution.
+Your proposed answer or contribution. Please make it as detailed and high-quality as possible.
 </solution>
 
 <evaluation>
-Assess other agents' recent contributions.
+Assess other agents' recent contributions, INCLUDING their solutions and their evaluations.
 </evaluation>
 
 <comparison>
-Compare the solutions of other agents from the most recent round.
-For every pair of agents (excluding yourself), determine who provided the better contribution.
-Format: "Agent X > Agent Y" or "Agent X = Agent Y" (if tied).
+Provide pairwise comparisons between agents' completions (solution+evaluation), based on the most recently COMPLETED round.
+Output one line per unordered pair of agents you can compare.
+Format: "Agent A > Agent B" (A better), or "Agent A = Agent B" (tie).
 Example:
-Agent 1 > Agent 2
-Agent 3 > Agent 1
+Agent 0 > Agent 1
+Agent 0 = Agent 2
 </comparison>
 
 <consensus>YES/NO</consensus>
@@ -37,6 +43,8 @@ IMPORTANT:
 - Use EXACTLY these tags in this order
 - For consensus, write ONLY "YES" or "NO" inside the tag
 - Be honest about consensus - only say YES when truly satisfied with the answer
+- Do not wrap your answer in Markdown or code fences
+- If it's the first round and there is no prior completed round, set <evaluation> to "N/A" and <comparison> to "N/A".
 """
 
 
@@ -44,12 +52,11 @@ IMPORTANT:
 class ParsedResponse:
     """Parsed agent response."""
 
-    thinking: str
     solution: str
     evaluation: str
     consensus_reached: bool
     consensus_reason: str
-    comparisons: list[tuple[int, int]]  # List of (winner_id, loser_id) tuples
+    comparisons: list[tuple[int, str, int]]  # List of (agent_a_id, op, agent_b_id) tuples
     raw_response: str
 
 
@@ -65,9 +72,22 @@ def parse_agent_response(response: str) -> ParsedResponse:
     Raises:
         ValueError if the response doesn't match expected format
     """
-    # Extract thinking (optional - may not always be present)
-    thinking_match = re.search(r"<thinking>(.*?)</thinking>", response, re.DOTALL)
-    thinking = thinking_match.group(1).strip() if thinking_match else ""
+    # Normalize common wrappers (e.g., markdown code fences) and strip Qwen-style thinking blocks.
+    response = response.strip()
+    # Remove fenced blocks like ```xml ... ```
+    if response.startswith("```"):
+        response = re.sub(r"^```[a-zA-Z0-9_-]*\n", "", response)
+        response = re.sub(r"\n```$", "", response)
+        response = response.strip()
+
+    # If there's preamble text, start at the first structured tag.
+    first_tag = re.search(r"<(solution|evaluation|comparison|consensus)\b", response)
+    if first_tag:
+        response = response[first_tag.start() :]
+
+    # Handle Qwen-style thinking wrappers. Keep the content (it may contain our XML tags),
+    # but remove the wrapper tags to avoid confusing downstream parsing.
+    response = re.sub(r"</?think>", "", response, flags=re.IGNORECASE).strip()
 
     # Extract solution (required)
     solution_match = re.search(r"<solution>(.*?)</solution>", response, re.DOTALL)
@@ -95,13 +115,13 @@ def parse_agent_response(response: str) -> ParsedResponse:
         content = comp_match.group(1).strip()
         # Regex to find "Agent A > Agent B"
         pairs = re.findall(r"Agent\s+(\d+)\s*([>=])\s*Agent\s+(\d+)", content)
-        for winner, loser in pairs:
-            comparisons.append((int(winner), int(loser)))
+        for agent_a, op, agent_b in pairs:
+            comparisons.append((int(agent_a), op, int(agent_b)))
 
     # Parse YES/NO
-    if "YES" in consensus_text:
+    if consensus_text == "YES":
         consensus_reached = True
-    elif "NO" in consensus_text:
+    elif consensus_text == "NO":
         consensus_reached = False
     else:
         # Default to NO if unclear
@@ -114,7 +134,6 @@ def parse_agent_response(response: str) -> ParsedResponse:
     consensus_reason = reason_match.group(1).strip()
 
     return ParsedResponse(
-        thinking=thinking,
         solution=solution,
         evaluation=evaluation,
         consensus_reached=consensus_reached,

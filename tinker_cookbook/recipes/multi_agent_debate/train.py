@@ -20,16 +20,23 @@ class CLIConfig:
     model_name: str = "meta-llama/Llama-3.2-1B"
     renderer_name: str | None = None
     num_agents: int = 3
-    batch_size: int = 64
+    batch_size: int = 16
     num_train_datapoints: int = 1024
     num_test_datapoints: int = 64
     learning_rate: float = 3e-5
-    max_tokens: int = 512
+    max_tokens: int = 8196
     eval_every: int = 10
     save_every: int = 20
-    hf_dataset_name: str = "lighteval/mmlu"
-    hf_dataset_subset: str | None = "all"  # e.g., "all" or "abstract_algebra"
-    hf_dataset_split: str = "test"  # HF split name (e.g., "train", "test", "validation")
+    max_rounds: int = 3
+
+    # Prompt source (local JSONL by default; avoids network).
+    dataset_path: str = "tinker_cookbook/example_data/nonverifiable_queries.jsonl"
+    dataset_field: str = "query"
+
+    # Optional HF dataset (requires network access).
+    hf_dataset_name: str | None = None
+    hf_dataset_subset: str | None = None
+    hf_dataset_split: str = "train"
     hf_dataset_question_field: str = "question"
     max_questions: int = 1000
     wandb_project: str | None = None
@@ -43,12 +50,14 @@ def build_config(cli_config: CLIConfig) -> train.Config:
     renderer_name = cli_config.renderer_name or model_info.get_recommended_renderer_name(
         cli_config.model_name
     )
-    # Backward compat: if user passed a subject via hf_dataset_split, treat it as the config
     hf_subset = cli_config.hf_dataset_subset
     hf_split = cli_config.hf_dataset_split
 
     date_and_time = datetime.now().strftime("%Y-%m-%d-%H-%M")
-    run_name = f"{model_name}-debate-{cli_config.num_agents}agents-{cli_config.batch_size}batch-{cli_config.learning_rate}lr-{date_and_time}"
+    run_name = (
+        f"{model_name}-debate-{cli_config.num_agents}agents-"
+        f"{cli_config.batch_size}groups-{cli_config.learning_rate}lr-{date_and_time}"
+    )
 
     if cli_config.log_path is not None:
         log_path = cli_config.log_path
@@ -65,8 +74,11 @@ def build_config(cli_config: CLIConfig) -> train.Config:
         num_train_datapoints=cli_config.num_train_datapoints,
         num_test_datapoints=cli_config.num_test_datapoints,
         num_agents=cli_config.num_agents,
+        max_rounds=cli_config.max_rounds,
         model_name=model_name,
         renderer_name=renderer_name,
+        dataset_path=cli_config.dataset_path,
+        dataset_field=cli_config.dataset_field,
         hf_dataset_name=cli_config.hf_dataset_name,
         hf_dataset_subset=hf_subset,
         hf_dataset_split=hf_split,
