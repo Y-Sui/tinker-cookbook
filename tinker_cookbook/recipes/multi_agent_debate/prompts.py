@@ -164,61 +164,61 @@ def parse_agent_response(
     )
 
 
-def parse_pairwise_comparison(response: str, agent_a_id: int, agent_b_id: int) -> str:
-    """Parse the pairwise comparison response.
+# def parse_pairwise_comparison(response: str, agent_a_id: int, agent_b_id: int) -> str:
+#     """Parse the pairwise comparison response.
 
-    Args:
-        response: The model's comparison response
-        agent_a_id: ID of first agent
-        agent_b_id: ID of second agent
+#     Args:
+#         response: The model's comparison response
+#         agent_a_id: ID of first agent
+#         agent_b_id: ID of second agent
 
-    Returns:
-        One of: f"AGENT_{agent_a_id}_BETTER", f"AGENT_{agent_b_id}_BETTER", or "TIE"
-    """
-    response = response.strip().upper()
+#     Returns:
+#         One of: f"AGENT_{agent_a_id}_BETTER", f"AGENT_{agent_b_id}_BETTER", or "TIE"
+#     """
+#     response = response.strip().upper()
 
-    # Look for the expected patterns
-    if f"AGENT_{agent_a_id}_BETTER" in response:
-        return f"AGENT_{agent_a_id}_BETTER"
-    elif f"AGENT_{agent_b_id}_BETTER" in response:
-        return f"AGENT_{agent_b_id}_BETTER"
-    elif "TIE" in response:
-        return "TIE"
-    else:
-        # Default to TIE if we can't parse
-        return "TIE"
+#     # Look for the expected patterns
+#     if f"AGENT_{agent_a_id}_BETTER" in response:
+#         return f"AGENT_{agent_a_id}_BETTER"
+#     elif f"AGENT_{agent_b_id}_BETTER" in response:
+#         return f"AGENT_{agent_b_id}_BETTER"
+#     elif "TIE" in response:
+#         return "TIE"
+#     else:
+#         # Default to TIE if we can't parse
+#         return "TIE"
 
 
-def format_conversation_history(
-    agent_responses: list[list[ParsedResponse]], num_agents: int, k_turns: int
-) -> str:
-    """Format the last K turns of conversation history.
+# def format_conversation_history(
+#     agent_responses: list[list[ParsedResponse]], num_agents: int, k_turns: int
+# ) -> str:
+#     """Format the last K turns of conversation history.
 
-    Args:
-        agent_responses: List of turns, where each turn is a list of ParsedResponse (one per agent)
-        num_agents: Total number of agents
-        k_turns: Number of recent turns to include
+#     Args:
+#         agent_responses: List of turns, where each turn is a list of ParsedResponse (one per agent)
+#         num_agents: Total number of agents
+#         k_turns: Number of recent turns to include
 
-    Returns:
-        Formatted string of conversation history
-    """
-    if len(agent_responses) == 0:
-        return "(No previous turns yet)"
+#     Returns:
+#         Formatted string of conversation history
+#     """
+#     if len(agent_responses) == 0:
+#         return "(No previous turns yet)"
 
-    # Get last k turns (or all if fewer than k)
-    recent_turns = agent_responses[-k_turns:]
+#     # Get last k turns (or all if fewer than k)
+#     recent_turns = agent_responses[-k_turns:]
 
-    lines = []
-    for turn_idx, turn_responses in enumerate(recent_turns):
-        actual_turn = len(agent_responses) - len(recent_turns) + turn_idx
-        lines.append(f"--- Turn {actual_turn + 1} ---")
-        for agent_id in range(num_agents):
-            if agent_id < len(turn_responses):
-                resp = turn_responses[agent_id]
-                lines.append(f"\nAgent {agent_id} Solution:")
-                lines.append(resp.solution)
-                lines.append(f"\nAgent {agent_id} Evaluation:")
-                lines.append(resp.evaluation)
-        lines.append("")
+#     lines = []
+#     for turn_idx, turn_responses in enumerate(recent_turns):
+#         actual_turn = len(agent_responses) - len(recent_turns) + turn_idx
+#         lines.append(f"--- Turn {actual_turn + 1} ---")
+#         for agent_id in range(num_agents):
+#             if agent_id < len(turn_responses):
+#                 resp = turn_responses[agent_id]
+#                 lines.append(f"\nAgent {agent_id} Solution:")
+#                 lines.append(resp.solution)
+#                 lines.append(f"\nAgent {agent_id} Evaluation:")
+#                 lines.append(resp.evaluation)
+#         lines.append("")
 
-    return "\n".join(lines)
+#     return "\n".join(lines)
