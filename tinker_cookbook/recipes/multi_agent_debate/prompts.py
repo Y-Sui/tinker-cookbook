@@ -11,11 +11,12 @@ Your tasks:
 1) Propose (or refine) a high-quality solution to the query.
 2) Evaluate other agents' work, including BOTH:
    - their proposed solution, and
-   - the quality/fairness/helpfulness of their evaluations of others.
+   - the quality/fairness/helpfulness of their evaluations of others, and
+   - the quality/fairness/helpfulness of their pairwise comparisons.
 3) Provide pairwise comparisons between agents' overall completions.
 
 DEFINITIONS:
-- An agent's "completion" means the combination of its <solution> and <evaluation> content for the current round.
+- An agent's "completion" means the combination of its <solution>, <evaluation>, and <comparison> content for the current round.
 
 RESPONSE FORMAT (use exact XML tags, in this order):
 
@@ -24,11 +25,11 @@ Your proposed answer or contribution. Please make it as detailed and high-qualit
 </solution>
 
 <evaluation>
-Assess other agents' recent contributions, INCLUDING their solutions and their evaluations.
+Assess other agents' recent contributions, INCLUDING their solutions, their evaluations, and their comparisons.
 </evaluation>
 
 <comparison>
-Provide pairwise comparisons between agents' completions (solution+evaluation), based on the most recently COMPLETED round.
+Provide pairwise comparisons between agents' completions (solution+evaluation+comparison), based on the most recently COMPLETED round.
 Output one line per unordered pair of agents you can compare.
 Format: "Agent A > Agent B" (A better), or "Agent A = Agent B" (tie).
 Example:
@@ -58,9 +59,13 @@ class ParsedResponse:
     consensus_reason: str
     comparisons: list[tuple[int, str, int]]  # List of (agent_a_id, op, agent_b_id) tuples
     raw_response: str
+    comparison_text: str = ""
+    author_id: int = -1
+    observation: str = ""
+    thinking: str = ""
 
 
-def parse_agent_response(response: str) -> ParsedResponse:
+def parse_agent_response(response: str, *, author_id: int, observation: str = "") -> ParsedResponse:
     """Parse the XML-formatted agent response.
 
     Args:
@@ -110,9 +115,11 @@ def parse_agent_response(response: str) -> ParsedResponse:
     consensus_text = consensus_match.group(1).strip().upper()
 
     comparisons = []
+    comparison_text = ""
     comp_match = re.search(r"<comparison>(.*?)</comparison>", response, re.DOTALL | re.IGNORECASE)
     if comp_match:
         content = comp_match.group(1).strip()
+        comparison_text = content
         # Regex to find "Agent A > Agent B"
         pairs = re.findall(r"Agent\s+(\d+)\s*([>=])\s*Agent\s+(\d+)", content)
         for agent_a, op, agent_b in pairs:
@@ -140,6 +147,9 @@ def parse_agent_response(response: str) -> ParsedResponse:
         consensus_reason=consensus_reason,
         comparisons=comparisons,
         raw_response=response,
+        comparison_text=comparison_text,
+        author_id=author_id,
+        observation=observation,
     )
 
 

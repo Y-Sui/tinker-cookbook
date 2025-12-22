@@ -28,6 +28,10 @@ class CLIConfig:
     eval_every: int = 10
     save_every: int = 20
     max_rounds: int = 3
+    reward_mode: str = "win_rate"  # "win_rate" | "win_minus_loss"
+    history_rounds: int = 2  # -1 = entire history
+    num_groups_to_log: int = 4  # 0 disables logtree; >=batch_size logs all groups
+    log_full_transcript: bool = False  # include full per-group transcript in logtree
 
     # Prompt source (local JSONL by default; avoids network).
     dataset_path: str = "tinker_cookbook/example_data/nonverifiable_queries.jsonl"
@@ -75,6 +79,9 @@ def build_config(cli_config: CLIConfig) -> train.Config:
         num_test_datapoints=cli_config.num_test_datapoints,
         num_agents=cli_config.num_agents,
         max_rounds=cli_config.max_rounds,
+        reward_mode=cli_config.reward_mode,
+        history_rounds=cli_config.history_rounds,
+        log_full_transcript=cli_config.log_full_transcript,
         model_name=model_name,
         renderer_name=renderer_name,
         dataset_path=cli_config.dataset_path,
@@ -94,6 +101,7 @@ def build_config(cli_config: CLIConfig) -> train.Config:
         max_tokens=cli_config.max_tokens,
         eval_every=cli_config.eval_every,
         save_every=cli_config.save_every,
+        num_groups_to_log=cli_config.num_groups_to_log,
         wandb_project=cli_config.wandb_project,
         wandb_name=wandb_name,
     )
