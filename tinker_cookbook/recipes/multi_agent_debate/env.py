@@ -131,7 +131,11 @@ class MultiAgentCoordinator:
             )
 
     async def submit_response(
-        self, agent_id: int, response: str, *, observation: str = ""
+        self,
+        agent_id: int,
+        response: str,
+        *,
+        observation: str = "",
     ) -> ParsedResponse:
         """Submit an agent's response and advance the conversation."""
         async with self.condition:
@@ -141,7 +145,11 @@ class MultiAgentCoordinator:
                 )
 
             # Parse the response
-            parsed = parse_agent_response(response, author_id=agent_id, observation=observation)
+            parsed = parse_agent_response(
+                response,
+                author_id=agent_id,
+                observation=observation,
+            )
 
             # Advance state
             self.state.advance_turn(parsed)
@@ -265,7 +273,9 @@ class MultiAgentDebateEnv(Env):
             # Submit to coordinator
             try:
                 await self.coordinator.submit_response(
-                    opponent_agent_id, opponent_content, observation=observation_str
+                    opponent_agent_id,
+                    opponent_content,
+                    observation=observation_str,
                 )
             except ValueError:
                 await self.coordinator.abort()
@@ -277,17 +287,48 @@ class MultiAgentDebateEnv(Env):
         completed_rounds = self.coordinator.state.get_completed_rounds()
         history = self.get_conversation_history()
 
+        # Determine which agents have already responded in the current round so far.
+        # (This list grows as the round is being filled; at a new-round boundary it is empty.)
+        current_round_so_far = (
+            self.coordinator.state.agent_responses[-1]
+            if self.coordinator.state.agent_responses
+            else []
+        )
+        if self.coordinator.state.current_turn % self.coordinator.state.num_agents == 0:
+            current_round_so_far = []
+
         if completed_rounds == 0:
+            # Round 1 special-casing:
+            # - Agent 0: no eval, no comparisons.
+            # - Agent 1: may evaluate Agent 0, but no comparisons yet.
+            # - Agent 2+: may evaluate earlier agents and can start comparisons among earlier agents.
+            if len(current_round_so_far) == 0:
+                return (
+                    f"Question: {self.coordinator.state.question}\n\n"
+                    f"Round {round_idx + 1} of {self.coordinator.state.max_rounds}.\n"
+                    "First turn: propose your solution.\n"
+                    "Set <evaluation> to N/A and <comparison> to N/A or empty."
+                )
+            if len(current_round_so_far) == 1:
+                return (
+                    f"{history}\n\n"
+                    f"Round {round_idx + 1} of {self.coordinator.state.max_rounds}.\n"
+                    "Evaluate Agent 0's completion, then provide your solution.\n"
+                    "Do NOT produce comparisons yet: set <comparison> to N/A or empty."
+                )
             return (
-                f"Question: {self.coordinator.state.question}\n\n"
+                f"{history}\n\n"
                 f"Round {round_idx + 1} of {self.coordinator.state.max_rounds}.\n"
-                "First round: propose your solution. Set <evaluation> to N/A and <comparison> to N/A or empty."
+                "Evaluate earlier agents' completions in this round, then provide your solution.\n"
+                "You may produce <comparison> now, but only among OTHER agents who have already responded in this round "
+                "(in Round 1 this means only agents with id < your id), and never include yourself."
             )
 
         return (
             f"{history}\n\n"
             f"Round {round_idx + 1} of {self.coordinator.state.max_rounds}.\n"
-            "Use the most recently COMPLETED round as the basis for <evaluation> and <comparison>."
+            "Evaluate previous completions (solutions + evaluations + comparisons), including whether prior judging makes sense.\n"
+            "In <comparison>, compare ONLY other agents (exclude yourself). Prefer comparing the most recently available completions."
         )
 
     def get_observation(self) -> types.ModelInput:
@@ -312,7 +353,9 @@ class MultiAgentDebateEnv(Env):
 
         try:
             await self.coordinator.submit_response(
-                self.agent_id, action_content, observation=observation_str
+                self.agent_id,
+                action_content,
+                observation=observation_str,
             )
         except ValueError:
             # Failed to parse or wrong turn: abort the episode to avoid deadlocking other agents.
@@ -431,9 +474,7 @@ class MultiAgentEnvGroupBuilder(EnvGroupBuilder):
                         for agent_id, response in enumerate(round_responses):
                             with logtree.scope_header(f"Agent {agent_id}"):
                                 with logtree.scope_details("System prompt"):
-                                    logtree.log_text(
-                                        AGENT_SYSTEM_PROMPT.format(agent_id=agent_id)
-                                    )
+                                    logtree.log_text(AGENT_SYSTEM_PROMPT.format(agent_id=agent_id))
                                 if response.observation:
                                     with logtree.scope_details("Observation (context)"):
                                         logtree.log_text(response.observation)

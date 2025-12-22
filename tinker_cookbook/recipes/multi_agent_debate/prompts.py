@@ -3,49 +3,49 @@
 import re
 from dataclasses import dataclass
 
-AGENT_SYSTEM_PROMPT = """You are Agent {agent_id} in a multi-agent self-play discussion to answer an open-ended, non-verifiable user query.
+AGENT_SYSTEM_PROMPT = """You are Agent {agent_id} participating in a multi-agent self-play discussion to collaboratively answer an open-ended, non-verifiable user query.
 
-All agents share the same underlying policy model, but you must act as an independent participant.
+Your objectives:
+- Propose or refine a high-quality, detailed solution to the query.
+- Evaluate other agents' recent contributions, which includes:
+   - Critiquing their solution quality,
+   - Assessing the fairness/helpfulness of their evaluations,
+   - Reviewing the fairness/helpfulness of their comparisons.
+- Provide pairwise overall comparisons (solution + evaluation + comparison) between other agents’ completions. (Do NOT compare yourself.)
 
-Your tasks:
-1) Propose (or refine) a high-quality solution to the query.
-2) Evaluate other agents' work, including BOTH:
-   - their proposed solution, and
-   - the quality/fairness/helpfulness of their evaluations of others, and
-   - the quality/fairness/helpfulness of their pairwise comparisons.
-3) Provide pairwise comparisons between agents' overall completions.
+Special instructions:
+- Carefully reason through your solution and all evaluations before reaching any final conclusions. For each section, separate out your reasoning and ONLY then reach a conclusion or classification.
+- The <solution> comes first and should NOT include any conclusions about relative agent performance. The <evaluation> is next (reasoning and then judgments about others), followed by <comparison> (pairwise rankings of other agents’ total output), and finally consensus discussion.
+- Maintain the exact order and formatting for XML tags as given.
 
-DEFINITIONS:
-- An agent's "completion" means the combination of its <solution>, <evaluation>, and <comparison> content for the current round.
-
-RESPONSE FORMAT (use exact XML tags, in this order):
+OUTPUT FORMAT (use exact XML tags, in this order):
 
 <solution>
-Your proposed answer or contribution. Please make it as detailed and high-quality as possible.
+Your detailed, well-reasoned answer or proposal. Avoid making summary or comparison statements here.
 </solution>
 
 <evaluation>
-Assess other agents' recent contributions, INCLUDING their solutions, their evaluations, and their comparisons.
+Carefully assess the other agents’ recent work. Provide reasoning for each critique (both solution critique and meta-evaluation of their assessment/comparison quality), and only then draw any judgment or classification.
+- If it is the first round and there are no prior completions, write "N/A" here.
 </evaluation>
 
 <comparison>
-Provide pairwise comparisons between agents' completions (solution+evaluation+comparison), based on the most recently COMPLETED round.
-Output one line per unordered pair of agents you can compare.
-Format: "Agent A > Agent B" (A better), or "Agent A = Agent B" (tie).
-Example:
-Agent 0 > Agent 1
-Agent 0 = Agent 2
+For all unordered pairs of the other agents’ completions, provide pairwise rankings or ties (e.g., "Agent 1 > Agent 2"). Only do this after fully evaluating the agents. Never include yourself in any comparison. List one line per pair.  
+- If it is the first round with no prior completions, write "N/A" here.
 </comparison>
 
 <consensus>YES/NO</consensus>
-<consensus_reason>...</consensus_reason>
+<consensus_reason>
+Give a brief justification for your consensus determination. Start with your reasoning process; only then give your "YES" or "NO" final decision.
+</consensus_reason>
 
-IMPORTANT:
-- Use EXACTLY these tags in this order
-- For consensus, write ONLY "YES" or "NO" inside the tag
-- Be honest about consensus - only say YES when truly satisfied with the answer
-- Do not wrap your answer in Markdown or code fences
-- If it's the first round and there is no prior completed round, set <evaluation> to "N/A" and <comparison> to "N/A".
+Key Reminders:
+- Use EXACTLY these five XML tags, in strict order, with no extra wrapping or markdown.
+- Do NOT compare your own work in the <comparison> section.
+- For consensus, ONLY write "YES" or "NO" inside the <consensus> tag.
+
+Objective summary:  
+Propose a high-quality solution; evaluate and compare other agents’ solution/evaluation/comparison content using the provided XML tags and order, always reasoning before reaching conclusions, and honestly judge consensus status at the end.
 """
 
 
@@ -65,7 +65,12 @@ class ParsedResponse:
     thinking: str = ""
 
 
-def parse_agent_response(response: str, *, author_id: int, observation: str = "") -> ParsedResponse:
+def parse_agent_response(
+    response: str,
+    *,
+    author_id: int,
+    observation: str = "",
+) -> ParsedResponse:
     """Parse the XML-formatted agent response.
 
     Args:
@@ -123,7 +128,13 @@ def parse_agent_response(response: str, *, author_id: int, observation: str = ""
         # Regex to find "Agent A > Agent B"
         pairs = re.findall(r"Agent\s+(\d+)\s*([>=])\s*Agent\s+(\d+)", content)
         for agent_a, op, agent_b in pairs:
-            comparisons.append((int(agent_a), op, int(agent_b)))
+            a_id = int(agent_a)
+            b_id = int(agent_b)
+
+            # Enforce: the author must not compare themselves.
+            if a_id == author_id or b_id == author_id:
+                continue
+            comparisons.append((a_id, op, b_id))
 
     # Parse YES/NO
     if consensus_text == "YES":
