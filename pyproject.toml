@@ -12,11 +12,13 @@ dependencies = [
     "cloudpickle",
     "datasets",
     "numpy",
+    "pillow",
     "rich",
     "termcolor",
     "tinker>=0.6.1",
     "torch",
-    "transformers",
+    "torchvision",
+    "transformers>=4.57.1",
     "blobfile",
     "inspect-ai",
     "anyio",
@@ -25,6 +27,8 @@ dependencies = [
     "textarena>=0.7.4",
     "math-verify",
     "scipy",
+    "pytest>=9.0.2",
+    "tiktoken>=0.12.0", # Required for Kimi tokenizer
 ]
 
 [project.urls]
