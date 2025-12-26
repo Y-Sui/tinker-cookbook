@@ -220,9 +220,7 @@ class MultiAgentDebateEnv(Env):
     async def _summarize(self, history: str) -> str:
         """Summarize debate history using the pre-initialized summarizer policy."""
         if self._summarizer_policy is None:
-            raise RuntimeError(
-                "Summarizer not initialized. Set summarize_history=True to enable."
-            )
+            raise RuntimeError("Summarizer not initialized. Set summarize_history=True to enable.")
 
         messages: list[Message] = [
             {
@@ -411,8 +409,23 @@ class MultiAgentEnvGroupBuilder(EnvGroupBuilder):
     log_full_transcript: bool = False
     # Optional fixed opponents for non-self-play evaluation. When provided, should have
     # length == num_agents, and we will pass per-env lists with the controlled agent removed.
-    opponent_policies_all: list[TinkerMessageCompleter] | None = None
     model_name: str | None = None
+
+    def _construct_fixed_opponent_policies(
+        self, renderer: Renderer
+    ) -> list[TinkerMessageCompleter]:
+        """Create fixed opponent policies for evaluation (using a base model)."""
+        service_client = tinker.ServiceClient()
+        sampling_client = service_client.create_sampling_client(base_model=self.model_name)
+        # Create one policy and share it (they're stateless)
+        policy = TinkerMessageCompleter(
+            sampling_client=sampling_client,
+            renderer=renderer,
+            max_tokens=2048,
+            stop_condition=_get_debate_stop_condition(renderer),
+        )
+        # Return N-1 policies for opponents (controlled agent is excluded)
+        return [policy for _ in range(self.num_agents - 1)]
 
     async def make_envs(self) -> Sequence[Env]:
         """Create a group of environments for a multi-agent debate."""
@@ -439,35 +452,29 @@ class MultiAgentEnvGroupBuilder(EnvGroupBuilder):
                 for i in range(self.num_agents)
             ]
 
-        assert (
-            self.opponent_policies_all is not None
-            and len(self.opponent_policies_all) == self.num_agents
-        ), "non-self-play requires opponent_policies_all with length == num_agents"
-
         # Role-averaged evaluation: each env is an independent debate where the *controlled* agent
         # is `agent_id=i`, and all other agents are played by fixed opponent policies.
-        envs: list[MultiAgentDebateEnv] = []
-        for i in range(self.num_agents):
-            coordinator = MultiAgentCoordinator(
-                question=question, num_agents=self.num_agents, max_turns=max_turns
-            )
-            opponent_policies_for_i = [
-                pol for j, pol in enumerate(self.opponent_policies_all) if j != i
-            ]
-            envs.append(
-                MultiAgentDebateEnv(
-                    agent_id=i,
-                    coordinator=coordinator,
-                    renderer=self.renderer,
-                    self_play=False,
-                    opponent_policies=opponent_policies_for_i,
-                    history_turns=self.history_turns,
-                    summarize_history=self.summarize_history,
-                    summarize_model=self.summarize_model,
-                    model_name=self.model_name,
+        else:
+            envs: list[MultiAgentDebateEnv] = []
+            opponent_policies = self._construct_fixed_opponent_policies(self.renderer)
+            for i in range(self.num_agents):
+                coordinator = MultiAgentCoordinator(
+                    question=question, num_agents=self.num_agents, max_turns=max_turns
                 )
-            )
-        return envs
+                envs.append(
+                    MultiAgentDebateEnv(
+                        agent_id=i,  # controlled agent at position i
+                        coordinator=coordinator,
+                        renderer=self.renderer,
+                        self_play=False,  # use opponent policies
+                        opponent_policies=opponent_policies,  # N-1 base model policies
+                        history_turns=self.history_turns,
+                        summarize_history=self.summarize_history,
+                        summarize_model=self.summarize_model,
+                        model_name=self.model_name,
+                    )
+                )
+            return envs
 
     async def compute_group_rewards(
         self, trajectory_group: list[Trajectory], env_group: Sequence[Env]
@@ -595,7 +602,6 @@ class MultiAgentDebateDataset(RLDataset):
         max_rounds: int,
         num_datapoints: int,
         model_name: str,
-        opponent_policies: list[TinkerMessageCompleter] | None = None,
     ):
         self.batch_size = batch_size
         self.questions = questions
@@ -610,7 +616,6 @@ class MultiAgentDebateDataset(RLDataset):
         self.max_rounds = max_rounds
         self.num_datapoints = num_datapoints
         self.model_name = model_name
-        self.opponent_policies = opponent_policies
 
     def get_batch(self, index: int) -> Sequence[EnvGroupBuilder]:
         """Get a batch of environment group builders."""
@@ -631,7 +636,6 @@ class MultiAgentDebateDataset(RLDataset):
                 log_full_transcript=self.log_full_transcript,
                 max_rounds=self.max_rounds,
                 model_name=self.model_name,
-                opponent_policies_all=self.opponent_policies,
             )
             for question_index in range(batch_start, batch_end)
         ]
@@ -669,8 +673,6 @@ class MultiAgentDebateDatasetBuilder(RLDatasetBuilder):
     hf_dataset_split: str = "train"
     hf_dataset_question_field: str = "question"
     max_questions: int = 1000
-    # Optional: use a different fixed opponent base model for evaluation.
-    opponent_model_name: str | None = None
 
     def load_questions(self) -> list[str]:
         if self.hf_dataset_name is not None:
@@ -734,24 +736,6 @@ class MultiAgentDebateDatasetBuilder(RLDatasetBuilder):
 
         return questions
 
-    def _construct_fixed_opponent_policies(
-        self, renderer: Renderer
-    ) -> list[TinkerMessageCompleter]:
-        """Create fixed opponent policies for evaluation (using a base model)."""
-        service_client = tinker.ServiceClient()
-        sampling_client = service_client.create_sampling_client(
-            base_model=self.opponent_model_name or self.model_name
-        )
-        return [
-            TinkerMessageCompleter(
-                sampling_client=sampling_client,
-                renderer=renderer,
-                max_tokens=2048,
-                stop_condition=_get_debate_stop_condition(renderer),
-            )
-            for _ in range(self.num_agents)
-        ]
-
     def _split_questions(self, questions: list[str]) -> tuple[list[str], list[str]]:
         """
         Split questions into disjoint train/test pools.
@@ -791,7 +775,6 @@ class MultiAgentDebateDatasetBuilder(RLDatasetBuilder):
             max_rounds=self.max_rounds,
             num_datapoints=self.num_train_datapoints,
             model_name=self.model_name,
-            opponent_policies=None,
         )
 
         # Test dataset (optional). If num_test_datapoints is 0, disable test set entirely.
@@ -799,7 +782,6 @@ class MultiAgentDebateDatasetBuilder(RLDatasetBuilder):
         if self.num_test_datapoints <= 0 or not test_questions:
             test_dataset = None
         else:
-            opponent_policies_all = self._construct_fixed_opponent_policies(renderer)
             test_dataset = MultiAgentDebateDataset(
                 batch_size=min(self.num_test_datapoints, self.batch_size),
                 questions=test_questions,
@@ -814,7 +796,6 @@ class MultiAgentDebateDatasetBuilder(RLDatasetBuilder):
                 max_rounds=self.max_rounds,
                 num_datapoints=self.num_test_datapoints,
                 model_name=self.model_name,
-                opponent_policies=opponent_policies_all,
             )
 
         return train_dataset, test_dataset

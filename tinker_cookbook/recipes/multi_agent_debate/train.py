@@ -3,12 +3,16 @@
 import asyncio
 import os
 from datetime import datetime
+from typing import Literal
 
 import chz
 from dotenv import load_dotenv
 
 from tinker_cookbook import cli_utils, model_info
 from tinker_cookbook.recipes.multi_agent_debate.env import MultiAgentDebateDatasetBuilder
+from tinker_cookbook.recipes.multi_agent_debate.verifiable_math_env import (
+    VerifiableMathDebateDatasetBuilder,
+)
 from tinker_cookbook.rl import train
 
 load_dotenv(override=True)
@@ -38,12 +42,18 @@ class CLIConfig:
     log_full_transcript: bool = False  # include full per-group transcript in logtree
     # Question splitting for eval. Set test_question_frac=0 to disable the split.
     test_question_frac: float = 0.1
-    # Optional: fixed opponent base model for eval (defaults to model_name).
-    opponent_model_name: str | None = None
 
     # Prompt source (local JSONL by default; avoids network).
     dataset_path: str = "tinker_cookbook/example_data/nonverifiable_queries.jsonl"
     dataset_field: str = "query"
+
+    # Verifiable (math-style) prompt source (local JSONL by default; avoids network).
+    verifiable_dataset_path: str = "tinker_cookbook/example_data/verifiable_math_problems.jsonl"
+    verifiable_problem_field: str = "problem"
+    verifiable_answer_field: str = "answer"
+    verifiable_grader: Literal["sympy", "math_verify"] = "sympy"
+    verifiable_grade_timeout: float = 1.0
+    verifiable_format_coef: float = 0.1
 
     # Optional HF dataset (requires network access).
     hf_dataset_name: str | None = None
@@ -87,9 +97,26 @@ def build_config(cli_config: CLIConfig) -> train.Config:
         wandb_name = os.environ.get("WANDB_NAME") or run_name
 
     if cli_config.env == "verifiable":
-        dataset_builder = None
-        # TODO: Implement verifiable dataset builder
-        raise NotImplementedError("Verifiable dataset builder not implemented")
+        dataset_builder = VerifiableMathDebateDatasetBuilder(
+            batch_size=cli_config.batch_size,
+            num_train_datapoints=cli_config.num_train_datapoints,
+            num_test_datapoints=cli_config.num_test_datapoints,
+            num_agents=cli_config.num_agents,
+            max_rounds=cli_config.max_rounds,
+            history_rounds=cli_config.history_rounds,
+            summarize_history=cli_config.summarize_history,
+            summarize_model=cli_config.summarize_model,
+            log_full_transcript=cli_config.log_full_transcript,
+            model_name=model_name,
+            renderer_name=renderer_name,
+            dataset_path=cli_config.verifiable_dataset_path,
+            problem_field=cli_config.verifiable_problem_field,
+            answer_field=cli_config.verifiable_answer_field,
+            test_question_frac=cli_config.test_question_frac,
+            grader=cli_config.verifiable_grader,
+            grade_timeout=cli_config.verifiable_grade_timeout,
+            format_coef=cli_config.verifiable_format_coef,
+        )
 
     elif cli_config.env == "non-verifiable":
         dataset_builder = MultiAgentDebateDatasetBuilder(
@@ -108,7 +135,6 @@ def build_config(cli_config: CLIConfig) -> train.Config:
             dataset_path=cli_config.dataset_path,
             dataset_field=cli_config.dataset_field,
             test_question_frac=cli_config.test_question_frac,
-            opponent_model_name=cli_config.opponent_model_name,
             hf_dataset_name=cli_config.hf_dataset_name,
             hf_dataset_subset=hf_subset,
             hf_dataset_split=hf_split,
