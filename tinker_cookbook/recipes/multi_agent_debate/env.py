@@ -36,7 +36,7 @@ from .reward import (
 )
 
 # Stop when we see the closing tag of the last required field
-STOP_CONDITION = ["</consensus_reason>"]
+STOP_CONDITION = ["</comparison>"]
 
 
 def _get_debate_stop_condition(renderer: Renderer) -> StopCondition:
@@ -55,63 +55,45 @@ def _get_debate_stop_condition(renderer: Renderer) -> StopCondition:
     return list(dict.fromkeys([*renderer_stop, *STOP_CONDITION]))
 
 
+def _get_summarizer_stop_condition(renderer: Renderer) -> StopCondition:
+    renderer_stop = renderer.get_stop_sequences()
+    return renderer_stop or []
+
+
 @dataclass
 class ConversationState:
     """Shared state for a multi-agent conversation."""
 
     question: str
     num_agents: int
-    max_rounds: int
+    max_turns: int
     current_turn: int = 0  # Global turn counter
     current_agent_id: int = 0  # Which agent's turn it is
-    agent_responses: list[list[ParsedResponse]] = field(default_factory=list)  # [turn][agent_id]
+    agent_responses: list[ParsedResponse] = field(default_factory=list)  # [turn]
     done: bool = False
-    consensus_reached: bool = False
 
-    def get_current_round(self) -> int:
-        """Get the current round number (each round = all agents take one turn)."""
+    def get_current_cycle(self) -> int:
+        """Get the current cycle index (each cycle = all agents take one turn)."""
         return self.current_turn // self.num_agents
-
-    def get_completed_rounds(self) -> int:
-        """Number of fully completed rounds so far."""
-        if not self.agent_responses:
-            return 0
-        # All rounds except possibly the last are completed; the last is completed iff it has num_agents.
-        completed = len(self.agent_responses) - 1
-        if len(self.agent_responses[-1]) == self.num_agents:
-            completed += 1
-        return completed
 
     def advance_turn(self, response: ParsedResponse) -> None:
         """Advance to the next turn after an agent responds."""
-        # Store response
-        if self.current_turn % self.num_agents == 0:
-            # Start of a new round
-            self.agent_responses.append([])
-
-        self.agent_responses[-1].append(response)
+        self.agent_responses.append(response)
 
         # Move to next agent
         self.current_turn += 1
         self.current_agent_id = self.current_turn % self.num_agents
 
-        # Check if we should end
-        if self.current_turn % self.num_agents == 0:
-            # Completed a full round, check consensus
-            latest_round = self.agent_responses[-1]
-            if all(resp.consensus_reached for resp in latest_round):
-                self.consensus_reached = True
-                self.done = True
-            elif self.get_current_round() >= self.max_rounds:
-                self.done = True
+        if self.current_turn >= self.max_turns:
+            self.done = True
 
 
 class MultiAgentCoordinator:
     """Coordinates a multi-agent debate conversation."""
 
-    def __init__(self, question: str, num_agents: int, max_rounds: int):
+    def __init__(self, question: str, num_agents: int, max_turns: int):
         self.state = ConversationState(
-            question=question, num_agents=num_agents, max_rounds=max_rounds
+            question=question, num_agents=num_agents, max_turns=max_turns
         )
         self.condition = asyncio.Condition()
 
@@ -175,8 +157,11 @@ class MultiAgentDebateEnv(Env):
     renderer: Renderer
     self_play: bool = True
     opponent_policies: list[TinkerMessageCompleter] | None = None
-    history_rounds: int = 2
-    max_chars_per_field: int = 800
+    history_turns: int = 2
+    summarize_history: bool = False
+    summarize_model: str | None = "Qwen/Qwen3-4B-Instruct-2507"
+    model_name: str | None = None
+    base_url: str | None = None
 
     def __post_init__(self):
         if self.self_play:
@@ -195,46 +180,93 @@ class MultiAgentDebateEnv(Env):
         """Get the system prompt for this agent."""
         return AGENT_SYSTEM_PROMPT.format(agent_id=self.agent_id)
 
-    def get_conversation_history(self) -> str:
-        """Format the conversation history for this agent."""
+    def _format_turns(self, turns: list[ParsedResponse]) -> str:
+        if not turns:
+            return ""
+        lines: list[str] = []
+        for turn_idx, response in enumerate(turns, start=1):
+            lines.append(f"--- Turn {turn_idx} (Agent {response.author_id}) ---")
+            lines.append("Solution:")
+            lines.append(response.solution.rstrip())
+            lines.append("Evaluation:")
+            lines.append(response.evaluation.rstrip())
+            if response.comparison_text:
+                lines.append("Comparison:")
+                lines.append(response.comparison_text.rstrip())
+            lines.append("")
+        return "\n".join(lines).rstrip()
+
+    async def _summarize(self, history: str) -> str:
+        service_client = tinker.ServiceClient()
+        sampling_client = service_client.create_sampling_client(
+            base_model=self.summarize_model or self.model_name
+        )
+        # init the summarizer policy, sample from tinker message completer
+        self._summarizer_policy = TinkerMessageCompleter(
+            sampling_client=sampling_client,
+            renderer=self.renderer,
+            max_tokens=892,
+            stop_condition=_get_summarizer_stop_condition(self.renderer),
+        )
+        messages: list[Message] = [
+            {
+                "role": "system",
+                "content": (
+                    "You summarize multi-agent debate transcripts.\n"
+                    "Write a concise, information-dense summary that preserves:\n"
+                    "- The user question\n"
+                    "- Each agent's key solution ideas\n"
+                    "- Each agent's critiques/evaluations of others (including meta-evaluation)\n"
+                    "- Any explicit comparisons (e.g. Agent 1 > Agent 0)\n"
+                    "Do not add new information. Output plain text only."
+                ),
+            },
+            {"role": "user", "content": history},
+        ]
+        resp = await self._summarizer_policy(messages)
+        return ensure_text(resp["content"]).strip()
+
+    async def get_conversation_context(self) -> str:
+        """Format the conversation context for this agent."""
         if not self.coordinator.state.agent_responses:
             return ""
 
-        def _clip(s: str) -> str:
-            s = s.strip()
-            if len(s) <= self.max_chars_per_field:
-                return s
-            return s[: self.max_chars_per_field].rstrip() + "…"
+        question = self.coordinator.state.question
+        turns = list(self.coordinator.state.agent_responses)
 
-        lines = [f"Question: {self.coordinator.state.question}\n"]
-        rounds = self.coordinator.state.agent_responses
-        # history_rounds:
-        # -1 => include entire history
-        #  0 => include no history
-        # >0 => include last K rounds
-        if self.history_rounds < 0:
-            start_idx = 0
+        # using full history without summarization
+        if not self.summarize_history:
+            return f"Question: {question}\n\n{self._format_turns(turns)}".rstrip()
+
+        # using summarization for older turns
+        if self.history_turns < 0:
+            raw_recent = turns
+            older: list[ParsedResponse] = []
+        elif self.history_turns == 0:
+            raw_recent = []
+            older = turns
         else:
-            start_idx = max(0, len(rounds) - self.history_rounds)
-        for round_idx, round_responses in enumerate(rounds[start_idx:], start=start_idx):
-            lines.append(f"--- Round {round_idx + 1} ---")
-            for agent_id, response in enumerate(round_responses):
-                lines.append(f"\nAgent {agent_id}:")
-                lines.append(f"Solution: {_clip(response.solution)}")
-                lines.append(f"Evaluation: {_clip(response.evaluation)}")
-                if response.comparison_text:
-                    lines.append(f"Comparison: {_clip(response.comparison_text)}")
-                consensus_status = "YES" if response.consensus_reached else "NO"
-                lines.append(f"Consensus: {consensus_status} - {_clip(response.consensus_reason)}")
-            lines.append("")
+            raw_recent = turns[-self.history_turns :] if len(turns) > self.history_turns else turns
+            older = turns[: -self.history_turns] if len(turns) > self.history_turns else []
 
-        return "\n".join(lines)
+        summary = ""
+        if older:
+            older_text = f"Question: {question}\n\n{self._format_turns(older)}"
+            summary = await self._summarize(older_text)
+
+        recent_text = self._format_turns(raw_recent)
+        parts: list[str] = [f"Question: {question}"]
+        if summary:
+            parts.append("\n--- Summary of earlier turns ---\n" + summary)
+        if recent_text:
+            parts.append("\n--- Recent turns (verbatim) ---\n" + recent_text)
+        return "\n".join(parts).rstrip()
 
     async def initial_observation(self) -> tuple[Observation, StopCondition]:
         """Get the initial observation for this agent."""
         if self.agent_id != 0:
             await self.wait_for_turn()
-        return self.get_observation(), self.stop_condition
+        return await self.get_observation(), self.stop_condition
 
     async def wait_for_turn(self) -> None:
         """Wait until it's this agent's turn."""
@@ -257,7 +289,7 @@ class MultiAgentDebateEnv(Env):
             )
 
             opponent_policy = self.opponent_policies[policy_idx]
-            observation_str = self.get_observation_string()
+            observation_str = await self.get_observation_string()
 
             # Get opponent response
             messages: list[Message] = [
@@ -281,59 +313,37 @@ class MultiAgentDebateEnv(Env):
                 await self.coordinator.abort()
                 return
 
-    def get_observation_string(self) -> str:
-        """Get the observation as a string."""
-        round_idx = self.coordinator.state.get_current_round()
-        completed_rounds = self.coordinator.state.get_completed_rounds()
-        history = self.get_conversation_history()
+    async def get_observation_string(self) -> str:
+        """Get the observation string for this agent."""
+        history = await self.get_conversation_context()
+        turn_idx = self.coordinator.state.current_turn
+        cycle_idx = self.coordinator.state.get_current_cycle()
+        max_cycles = self.coordinator.state.max_turns // self.coordinator.state.num_agents
 
-        # Determine which agents have already responded in the current round so far.
-        # (This list grows as the round is being filled; at a new-round boundary it is empty.)
-        current_round_so_far = (
-            self.coordinator.state.agent_responses[-1]
-            if self.coordinator.state.agent_responses
-            else []
-        )
-        if self.coordinator.state.current_turn % self.coordinator.state.num_agents == 0:
-            current_round_so_far = []
-
-        if completed_rounds == 0:
-            # Round 1 special-casing:
-            # - Agent 0: no eval, no comparisons.
-            # - Agent 1: may evaluate Agent 0, but no comparisons yet.
-            # - Agent 2+: may evaluate earlier agents and can start comparisons among earlier agents.
-            if len(current_round_so_far) == 0:
-                return (
-                    f"Question: {self.coordinator.state.question}\n\n"
-                    f"Round {round_idx + 1} of {self.coordinator.state.max_rounds}.\n"
-                    "First turn: propose your solution.\n"
-                    "Set <evaluation> to N/A and <comparison> to N/A or empty."
-                )
-            if len(current_round_so_far) == 1:
-                return (
-                    f"{history}\n\n"
-                    f"Round {round_idx + 1} of {self.coordinator.state.max_rounds}.\n"
-                    "Evaluate Agent 0's completion, then provide your solution.\n"
-                    "Do NOT produce comparisons yet: set <comparison> to N/A or empty."
-                )
+        # intermission prompt for first turn
+        if turn_idx == 0:
             return (
-                f"{history}\n\n"
-                f"Round {round_idx + 1} of {self.coordinator.state.max_rounds}.\n"
-                "Evaluate earlier agents' completions in this round, then provide your solution.\n"
-                "You may produce <comparison> now, but only among OTHER agents who have already responded in this round "
-                "(in Round 1 this means only agents with id < your id), and never include yourself."
+                f"Question: {self.coordinator.state.question}\n\n"
+                f"Cycle {cycle_idx + 1} of {max_cycles}, Turn {turn_idx + 1}.\n"
+                "First completion: propose your solution.\n"
+                'Set <evaluation> to "N/A" and <comparison> to "N/A".'
             )
 
+        # regular turn prompt, we use cycle/turn counting starting from 1 for user-friendliness
+        # may help models better track progress
         return (
             f"{history}\n\n"
-            f"Round {round_idx + 1} of {self.coordinator.state.max_rounds}.\n"
-            "Evaluate previous completions (solutions + evaluations + comparisons), including whether prior judging makes sense.\n"
-            "In <comparison>, compare ONLY other agents (exclude yourself). Prefer comparing the most recently available completions."
+            f"Cycle {cycle_idx + 1} of {max_cycles}, Turn {turn_idx + 1}.\n"
+            "Write a solution to the user query.\n"
+            "In <evaluation>, evaluate the most recent visible prior completions (up to 2 turns), including their solutions "
+            "and their evaluations/comparisons (meta-evaluate judge quality).\n"
+            "In <comparison>, compare only OTHER agents visible in the history (never include yourself). If fewer than two "
+            'other completions are visible, write "N/A".'
         )
 
-    def get_observation(self) -> types.ModelInput:
+    async def get_observation(self) -> types.ModelInput:
         """Get the current observation for this agent."""
-        observation_str = self.get_observation_string()
+        observation_str = await self.get_observation_string()
         messages: list[Message] = [
             {"role": "system", "content": self.get_system_prompt()},
             {"role": "user", "content": observation_str},
@@ -345,7 +355,7 @@ class MultiAgentDebateEnv(Env):
         if self.coordinator.done:
             return self.get_done_step()
 
-        observation_str = self.get_observation_string()
+        observation_str = await self.get_observation_string()
 
         # Parse and submit response
         action_message: Message = self.renderer.parse_response(action)[0]
@@ -375,11 +385,10 @@ class MultiAgentDebateEnv(Env):
         return StepResult(
             reward=0.0,
             episode_done=self.coordinator.done,
-            next_observation=self.get_observation(),
+            next_observation=await self.get_observation(),
             next_stop_condition=self.stop_condition,
             metrics={
-                "consensus_reached": 1.0 if self.coordinator.state.consensus_reached else 0.0,
-                "round": float(self.coordinator.state.get_current_round()),
+                "cycle": float(self.coordinator.state.get_current_cycle()),
             },
         )
 
@@ -405,22 +414,24 @@ class MultiAgentEnvGroupBuilder(EnvGroupBuilder):
     max_rounds: int
     self_play: bool
     reward_mode: str = "win_rate"  # "win_rate" | "win_minus_loss"
-    history_rounds: int = 2
+    history_turns: int = 2
+    summarize_history: bool = False
+    summarize_model: str | None = "Qwen/Qwen3-4B-Instruct-2507"
     log_full_transcript: bool = False
     # Optional fixed opponents for non-self-play evaluation. When provided, should have
     # length == num_agents, and we will pass per-env lists with the controlled agent removed.
     opponent_policies_all: list[TinkerMessageCompleter] | None = None
     model_name: str | None = None
-    base_url: str | None = None
 
     async def make_envs(self) -> Sequence[Env]:
         """Create a group of environments for a multi-agent debate."""
         question = self.questions[self.question_index % len(self.questions)]
+        max_turns = self.num_agents * self.max_rounds
 
         if self.self_play:
             # All agents share the same coordinator
             coordinator = MultiAgentCoordinator(
-                question=question, num_agents=self.num_agents, max_rounds=self.max_rounds
+                question=question, num_agents=self.num_agents, max_turns=max_turns
             )
             return [
                 MultiAgentDebateEnv(
@@ -429,7 +440,10 @@ class MultiAgentEnvGroupBuilder(EnvGroupBuilder):
                     renderer=self.renderer,
                     self_play=True,
                     opponent_policies=None,
-                    history_rounds=self.history_rounds,
+                    history_turns=self.history_turns,
+                    summarize_history=self.summarize_history,
+                    summarize_model=self.summarize_model,
+                    model_name=self.model_name,
                 )
                 for i in range(self.num_agents)
             ]
@@ -444,7 +458,7 @@ class MultiAgentEnvGroupBuilder(EnvGroupBuilder):
         envs: list[MultiAgentDebateEnv] = []
         for i in range(self.num_agents):
             coordinator = MultiAgentCoordinator(
-                question=question, num_agents=self.num_agents, max_rounds=self.max_rounds
+                question=question, num_agents=self.num_agents, max_turns=max_turns
             )
             opponent_policies_for_i = [
                 pol for j, pol in enumerate(self.opponent_policies_all) if j != i
@@ -456,7 +470,10 @@ class MultiAgentEnvGroupBuilder(EnvGroupBuilder):
                     renderer=self.renderer,
                     self_play=False,
                     opponent_policies=opponent_policies_for_i,
-                    history_rounds=self.history_rounds,
+                    history_turns=self.history_turns,
+                    summarize_history=self.summarize_history,
+                    summarize_model=self.summarize_model,
+                    model_name=self.model_name,
                 )
             )
         return envs
@@ -474,41 +491,33 @@ class MultiAgentEnvGroupBuilder(EnvGroupBuilder):
 
             if self.log_full_transcript:
                 # If logtree logging is enabled by the outer RL harness, emit the full multi-agent transcript.
-                # This is the easiest way to inspect the entire conversation across all rounds/agents.
+                # This is the easiest way to inspect the entire conversation across all turns/agents.
                 with logtree.scope_header("Debate Transcript"):
                     logtree.log_text(f"Question: {coordinator.state.question}")
-                    rounds = coordinator.state.agent_responses
-                    if not rounds:
+                    turns = coordinator.state.agent_responses
+                    if not turns:
                         logtree.log_text("(No responses captured)")
-                    for round_idx, round_responses in enumerate(rounds, start=1):
-                        with logtree.scope_header(f"Round {round_idx}"):
-                            for agent_id, response in enumerate(round_responses):
-                                with logtree.scope_header(f"Agent {agent_id}"):
-                                    with logtree.scope_details("System prompt"):
-                                        logtree.log_text(
-                                            AGENT_SYSTEM_PROMPT.format(agent_id=agent_id)
-                                        )
-                                    if response.observation:
-                                        with logtree.scope_details("Observation (context)"):
-                                            logtree.log_text(response.observation)
+                    for turn_idx, response in enumerate(turns, start=1):
+                        with logtree.scope_header(f"Turn {turn_idx}"):
+                            with logtree.scope_header(f"Agent {response.author_id}"):
+                                with logtree.scope_details("System prompt"):
                                     logtree.log_text(
-                                        f"Consensus: {'YES' if response.consensus_reached else 'NO'}"
+                                        AGENT_SYSTEM_PROMPT.format(agent_id=response.author_id)
                                     )
-                                    if response.consensus_reason:
-                                        logtree.log_text(
-                                            f"Consensus reason: {response.consensus_reason}"
-                                        )
-                                    if response.solution:
-                                        with logtree.scope_details("Solution"):
-                                            logtree.log_text(response.solution)
-                                    if response.evaluation:
-                                        with logtree.scope_details("Evaluation"):
-                                            logtree.log_text(response.evaluation)
-                                    if response.comparison_text:
-                                        with logtree.scope_details("Comparison"):
-                                            logtree.log_text(response.comparison_text)
-                                    with logtree.scope_details("Raw response"):
-                                        logtree.log_text(response.raw_response)
+                                if response.observation:
+                                    with logtree.scope_details("Observation (context)"):
+                                        logtree.log_text(response.observation)
+                                if response.solution:
+                                    with logtree.scope_details("Solution"):
+                                        logtree.log_text(response.solution)
+                                if response.evaluation:
+                                    with logtree.scope_details("Evaluation"):
+                                        logtree.log_text(response.evaluation)
+                                if response.comparison_text:
+                                    with logtree.scope_details("Comparison"):
+                                        logtree.log_text(response.comparison_text)
+                                with logtree.scope_details("Raw response"):
+                                    logtree.log_text(response.raw_response)
 
             # Leave-one-out rewards: agent i's reward excludes comparisons authored by i.
             if self.reward_mode == "win_rate":
@@ -588,12 +597,13 @@ class MultiAgentDebateDataset(RLDataset):
         renderer: Renderer,
         self_play: bool,
         reward_mode: str,
-        history_rounds: int,
+        history_turns: int,
+        summarize_history: bool,
+        summarize_model: str | None,
         log_full_transcript: bool,
         max_rounds: int,
         num_datapoints: int,
         model_name: str,
-        base_url: str | None,
         opponent_policies: list[TinkerMessageCompleter] | None = None,
     ):
         self.batch_size = batch_size
@@ -602,12 +612,13 @@ class MultiAgentDebateDataset(RLDataset):
         self.renderer = renderer
         self.self_play = self_play
         self.reward_mode = reward_mode
-        self.history_rounds = history_rounds
+        self.history_turns = history_turns
+        self.summarize_history = summarize_history
+        self.summarize_model = summarize_model
         self.log_full_transcript = log_full_transcript
         self.max_rounds = max_rounds
         self.num_datapoints = num_datapoints
         self.model_name = model_name
-        self.base_url = base_url
         self.opponent_policies = opponent_policies
 
     def get_batch(self, index: int) -> Sequence[EnvGroupBuilder]:
@@ -623,11 +634,12 @@ class MultiAgentDebateDataset(RLDataset):
                 num_agents=self.num_agents,
                 self_play=self.self_play,
                 reward_mode=self.reward_mode,
-                history_rounds=self.history_rounds,
+                history_turns=self.history_turns,
+                summarize_history=self.summarize_history,
+                summarize_model=self.summarize_model,
                 log_full_transcript=self.log_full_transcript,
                 max_rounds=self.max_rounds,
                 model_name=self.model_name,
-                base_url=self.base_url,
                 opponent_policies_all=self.opponent_policies,
             )
             for question_index in range(batch_start, batch_end)
@@ -648,9 +660,10 @@ class MultiAgentDebateDatasetBuilder(RLDatasetBuilder):
     num_agents: int = 3
     max_rounds: int = 3
     reward_mode: str = "win_rate"  # "win_rate" | "win_minus_loss"
-    history_rounds: int = 2
+    history_rounds: int = 2  # number of turns of history to include
+    summarize_history: bool = False
+    summarize_model: str | None = None
     log_full_transcript: bool = False
-    base_url: str | None = None
     model_name: str
     renderer_name: str
     # Prompt source: local JSONL by default (no network).
@@ -725,7 +738,7 @@ class MultiAgentDebateDatasetBuilder(RLDatasetBuilder):
         self, renderer: Renderer
     ) -> list[TinkerMessageCompleter]:
         """Create fixed opponent policies for evaluation (using a base model)."""
-        service_client = tinker.ServiceClient(base_url=self.base_url)
+        service_client = tinker.ServiceClient()
         sampling_client = service_client.create_sampling_client(
             base_model=self.opponent_model_name or self.model_name
         )
@@ -776,12 +789,13 @@ class MultiAgentDebateDatasetBuilder(RLDatasetBuilder):
             renderer=renderer,
             self_play=True,
             reward_mode=self.reward_mode,
-            history_rounds=self.history_rounds,
+            history_turns=self.history_rounds,
+            summarize_history=self.summarize_history,
+            summarize_model=self.summarize_model,
             log_full_transcript=self.log_full_transcript,
             max_rounds=self.max_rounds,
             num_datapoints=self.num_train_datapoints,
             model_name=self.model_name,
-            base_url=self.base_url,
             opponent_policies=None,
         )
 
@@ -798,12 +812,13 @@ class MultiAgentDebateDatasetBuilder(RLDatasetBuilder):
                 renderer=renderer,
                 self_play=False,
                 reward_mode=self.reward_mode,
-                history_rounds=self.history_rounds,
+                history_turns=self.history_rounds,
+                summarize_history=self.summarize_history,
+                summarize_model=self.summarize_model,
                 log_full_transcript=self.log_full_transcript,
                 max_rounds=self.max_rounds,
                 num_datapoints=self.num_test_datapoints,
                 model_name=self.model_name,
-                base_url=self.base_url,
                 opponent_policies=opponent_policies_all,
             )
 

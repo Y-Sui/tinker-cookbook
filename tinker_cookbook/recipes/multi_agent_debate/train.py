@@ -18,7 +18,7 @@ load_dotenv(override=True)
 class CLIConfig:
     """CLI configuration for multi-agent debate training."""
 
-    model_name: str = "meta-llama/Llama-3.2-1B"
+    model_name: str = "Qwen/Qwen3-8B"
     env: str = "non-verifiable"  # Options: verifiable, non-verifiable
     renderer_name: str | None = None
     num_agents: int = 3
@@ -32,6 +32,8 @@ class CLIConfig:
     save_every: int = 20
     reward_mode: str = "win_rate"  # "win_rate" | "win_minus_loss"
     history_rounds: int = 2  # -1 = entire history
+    summarize_history: bool = False
+    summarize_model: str | None = "Qwen/Qwen3-4B-Instruct-2507"
     num_groups_to_log: int = 4  # 0 disables logtree; >=batch_size logs all groups
     log_full_transcript: bool = False  # include full per-group transcript in logtree
     # Question splitting for eval. Set test_question_frac=0 to disable the split.
@@ -72,7 +74,7 @@ def build_config(cli_config: CLIConfig) -> train.Config:
     if cli_config.log_path is not None:
         log_path = cli_config.log_path
     else:
-        log_path = f"~/tinker-examples/multi-agent-debate/{run_name}"
+        log_path = f"~/tinker/multi-agent-debate/{run_name}"
 
     if cli_config.wandb_name is not None:
         wandb_name = cli_config.wandb_name
@@ -98,6 +100,8 @@ def build_config(cli_config: CLIConfig) -> train.Config:
             max_rounds=cli_config.max_rounds,
             reward_mode=cli_config.reward_mode,
             history_rounds=cli_config.history_rounds,
+            summarize_history=cli_config.summarize_history,
+            summarize_model=cli_config.summarize_model,
             log_full_transcript=cli_config.log_full_transcript,
             model_name=model_name,
             renderer_name=renderer_name,

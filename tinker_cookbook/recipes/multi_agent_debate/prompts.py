@@ -7,15 +7,15 @@ AGENT_SYSTEM_PROMPT = """You are Agent {agent_id} participating in a multi-agent
 
 Your objectives:
 - Propose or refine a high-quality, detailed solution to the query.
-- Evaluate other agents' recent contributions, which includes:
+- Evaluate other agents' recent contributions (including their solutions AND their evaluations of others), which includes:
    - Critiquing their solution quality,
-   - Assessing the fairness/helpfulness of their evaluations,
+   - Assessing the fairness/helpfulness of their evaluations (including meta-evaluating their critique quality),
    - Reviewing the fairness/helpfulness of their comparisons.
 - Provide pairwise overall comparisons (solution + evaluation + comparison) between other agents’ completions. (Do NOT compare yourself.)
 
 Special instructions:
 - Carefully reason through your solution and all evaluations before reaching any final conclusions. For each section, separate out your reasoning and ONLY then reach a conclusion or classification.
-- The <solution> comes first and should NOT include any conclusions about relative agent performance. The <evaluation> is next (reasoning and then judgments about others), followed by <comparison> (pairwise rankings of other agents’ total output), and finally consensus discussion.
+- The <solution> comes first and should NOT include any conclusions about relative agent performance. The <evaluation> is next (reasoning and then judgments about others), followed by <comparison> (pairwise rankings of other agents’ total output).
 - Maintain the exact order and formatting for XML tags as given.
 
 OUTPUT FORMAT (use exact XML tags, in this order):
@@ -26,26 +26,20 @@ Your detailed, well-reasoned answer or proposal. Avoid making summary or compari
 
 <evaluation>
 Carefully assess the other agents’ recent work. Provide reasoning for each critique (both solution critique and meta-evaluation of their assessment/comparison quality), and only then draw any judgment or classification.
-- If it is the first round and there are no prior completions, write "N/A" here.
+- If there are no prior completions visible in the conversation history, write "N/A" here.
 </evaluation>
 
 <comparison>
 For all unordered pairs of the other agents’ completions, provide pairwise rankings or ties (e.g., "Agent 1 > Agent 2"). Only do this after fully evaluating the agents. Never include yourself in any comparison. List one line per pair.  
-- If it is the first round with no prior completions, write "N/A" here.
+- If there are fewer than two other completions visible in the conversation history, write "N/A" here.
 </comparison>
 
-<consensus>YES/NO</consensus>
-<consensus_reason>
-Give a brief justification for your consensus determination. Start with your reasoning process; only then give your "YES" or "NO" final decision.
-</consensus_reason>
-
 Key Reminders:
-- Use EXACTLY these five XML tags, in strict order, with no extra wrapping or markdown.
+- Use EXACTLY these three XML tags, in strict order, with no extra wrapping or markdown.
 - Do NOT compare your own work in the <comparison> section.
-- For consensus, ONLY write "YES" or "NO" inside the <consensus> tag.
 
 Objective summary:  
-Propose a high-quality solution; evaluate and compare other agents’ solution/evaluation/comparison content using the provided XML tags and order, always reasoning before reaching conclusions, and honestly judge consensus status at the end.
+Propose a high-quality solution; evaluate and compare other agents’ solution/evaluation/comparison content using the provided XML tags and order, always reasoning before reaching conclusions.
 """
 
 
@@ -55,20 +49,19 @@ class ParsedResponse:
 
     solution: str
     evaluation: str
-    consensus_reached: bool
-    consensus_reason: str
     comparisons: list[tuple[int, str, int]]  # List of (agent_a_id, op, agent_b_id) tuples
     raw_response: str
     comparison_text: str = ""
     author_id: int = -1
     observation: str = ""
     thinking: str = ""
+    self_comparisons_dropped: int = 0
 
 
 def parse_agent_response(
     response: str,
     *,
-    author_id: int,
+    author_id: int = -1,
     observation: str = "",
 ) -> ParsedResponse:
     """Parse the XML-formatted agent response.
@@ -91,7 +84,7 @@ def parse_agent_response(
         response = response.strip()
 
     # If there's preamble text, start at the first structured tag.
-    first_tag = re.search(r"<(solution|evaluation|comparison|consensus)\b", response)
+    first_tag = re.search(r"<(solution|evaluation|comparison)\b", response)
     if first_tag:
         response = response[first_tag.start() :]
 
@@ -111,14 +104,6 @@ def parse_agent_response(
         raise ValueError(f"Missing <evaluation> tag in response: {response[:200]}")
     evaluation = evaluation_match.group(1).strip()
 
-    # Extract consensus (required)
-    consensus_match = re.search(
-        r"<consensus>(.*?)</consensus>", response, re.DOTALL | re.IGNORECASE
-    )
-    if not consensus_match:
-        raise ValueError(f"Missing <consensus> tag in response: {response[:200]}")
-    consensus_text = consensus_match.group(1).strip().upper()
-
     comparisons = []
     comparison_text = ""
     comp_match = re.search(r"<comparison>(.*?)</comparison>", response, re.DOTALL | re.IGNORECASE)
@@ -127,40 +112,28 @@ def parse_agent_response(
         comparison_text = content
         # Regex to find "Agent A > Agent B"
         pairs = re.findall(r"Agent\s+(\d+)\s*([>=])\s*Agent\s+(\d+)", content)
+        self_comparisons_dropped = 0
         for agent_a, op, agent_b in pairs:
             a_id = int(agent_a)
             b_id = int(agent_b)
 
             # Enforce: the author must not compare themselves.
             if a_id == author_id or b_id == author_id:
+                self_comparisons_dropped += 1
                 continue
             comparisons.append((a_id, op, b_id))
-
-    # Parse YES/NO
-    if consensus_text == "YES":
-        consensus_reached = True
-    elif consensus_text == "NO":
-        consensus_reached = False
     else:
-        # Default to NO if unclear
-        consensus_reached = False
-
-    # Extract consensus reasoning (required)
-    reason_match = re.search(r"<consensus_reason>(.*?)</consensus_reason>", response, re.DOTALL)
-    if not reason_match:
-        raise ValueError(f"Missing <consensus_reason> tag in response: {response[:200]}")
-    consensus_reason = reason_match.group(1).strip()
+        self_comparisons_dropped = 0
 
     return ParsedResponse(
         solution=solution,
         evaluation=evaluation,
-        consensus_reached=consensus_reached,
-        consensus_reason=consensus_reason,
         comparisons=comparisons,
         raw_response=response,
         comparison_text=comparison_text,
         author_id=author_id,
         observation=observation,
+        self_comparisons_dropped=self_comparisons_dropped,
     )
 
 

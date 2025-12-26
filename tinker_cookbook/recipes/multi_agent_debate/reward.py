@@ -6,16 +6,15 @@ if TYPE_CHECKING:
     from .prompts import ParsedResponse
 
 
-def _iter_comparisons_with_authors(agent_responses_rounds: list[list["ParsedResponse"]]):
-    for round_responses in agent_responses_rounds:
-        for resp in round_responses:
-            author = getattr(resp, "author_id", -1)
-            for agent_a, op, agent_b in resp.comparisons:
-                yield author, agent_a, op, agent_b
+def _iter_comparisons_with_authors_turns(agent_responses_turns: list["ParsedResponse"]):
+    for resp in agent_responses_turns:
+        author = getattr(resp, "author_id", -1)
+        for agent_a, op, agent_b in resp.comparisons:
+            yield author, agent_a, op, agent_b
 
 
 def compute_pairwise_win_rates(
-    agent_responses_rounds: list[list["ParsedResponse"]], num_agents: int
+    agent_responses_turns: list["ParsedResponse"], num_agents: int
 ) -> tuple[list[float], dict[str, float]]:
     """
     Leave-one-out win-rate reward:
@@ -32,7 +31,9 @@ def compute_pairwise_win_rates(
     total_votes = 0
     total_malformed = 0
 
-    for author, agent_a, op, agent_b in _iter_comparisons_with_authors(agent_responses_rounds):
+    for author, agent_a, op, agent_b in _iter_comparisons_with_authors_turns(
+        agent_responses_turns
+    ):
         if not (0 <= agent_a < num_agents and 0 <= agent_b < num_agents):
             total_malformed += 1
             continue
@@ -70,7 +71,7 @@ def compute_pairwise_win_rates(
 
 
 def compute_pairwise_win_minus_loss(
-    agent_responses_rounds: list[list["ParsedResponse"]], num_agents: int
+    agent_responses_turns: list["ParsedResponse"], num_agents: int
 ) -> tuple[list[float], dict[str, float]]:
     """
     Leave-one-out win-minus-loss reward:
@@ -87,7 +88,9 @@ def compute_pairwise_win_minus_loss(
     total_votes = 0
     total_malformed = 0
 
-    for author, agent_a, op, agent_b in _iter_comparisons_with_authors(agent_responses_rounds):
+    for author, agent_a, op, agent_b in _iter_comparisons_with_authors_turns(
+        agent_responses_turns
+    ):
         if not (0 <= agent_a < num_agents and 0 <= agent_b < num_agents):
             total_malformed += 1
             continue

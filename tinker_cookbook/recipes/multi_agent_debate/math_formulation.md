@@ -63,8 +63,6 @@ Each agent’s action is expected to decode to text with *exactly* these tags in
 1. `<solution>...</solution>`
 2. `<evaluation>...</evaluation>`
 3. `<comparison>...</comparison>` (allowed to be `N/A` or empty)
-4. `<consensus>YES/NO</consensus>`
-5. `<consensus_reason>...</consensus_reason>`
 
 The system prompt also imposes key constraints that affect reward correctness:
 
@@ -114,34 +112,32 @@ Each agent env constructs an observation by rendering two messages:
 
 ### History truncation (`history_rounds`)
 
-The env stores parsed responses by round. The history included in the prompt is round-based:
+The env stores parsed responses by turn. The history included in the prompt is turn-based:
 
-- `history_rounds = -1`: include *all* prior rounds.
+- `history_rounds = -1`: include *all* prior turns.
 - `history_rounds = 0`: include no history.
-- `history_rounds = K > 0`: include only the last \(K\) rounds.
+- `history_rounds = K > 0`: include only the last \(K\) turns.
 
-Each field (solution/evaluation/comparison/consensus_reason) is clipped to `max_chars_per_field` before insertion. This makes the observation string potentially **non-monotone** across turns (see “trajectory splitting” later).
+Optionally, older turns can be summarized via an auxiliary sampling call (configured by `summarize_history=True` and `summarize_model=<model_name>`). In that mode, the prompt includes:
 
-### Round 1 bootstrapping logic (when comparisons are allowed)
+- a summary of turns older than the last `history_rounds`, plus
+- the last `history_rounds` turns verbatim.
 
-Round 1 is special-cased to avoid “comparisons with no candidates”:
+If `summarize_history=False`, the environment includes the entire raw history (no truncation), which can grow over time.
 
-- If no one has spoken yet this round (Agent 0’s first turn):
-  - instruct: propose solution; set evaluation and comparison to `N/A`.
-- If exactly one agent has spoken (Agent 1’s first turn):
-  - instruct: evaluate Agent 0; propose solution; no comparisons.
-- Otherwise (Agent 2+ first-turn):
-  - instruct: evaluate earlier agents; propose solution;
-  - comparisons allowed only among agents who have already responded in the current round (and still excluding self).
+### Per-turn bootstrapping logic (history window)
 
-From Round 2 onward, agents are instructed to evaluate prior *solutions + evaluations + comparisons* (meta-judging), and to compare other agents (excluding self), typically emphasizing recently available completions.
+The first turn is special-cased to avoid “evaluate with no candidates”:
+
+- Turn 1 (Agent 0): instruct: propose solution; set evaluation and comparison to `N/A`.
+- Turn 2+: instruct: write a solution and evaluate the most recent visible prior completions (up to the history window), including meta-evaluating prior evaluations/comparisons.
 
 ### Stop conditions (sampling termination)
 
 The environment uses a debate-specific stop marker:
 
 ```
-</consensus_reason>
+</comparison>
 ```
 
 Stop sequences are made renderer-compatible:
@@ -158,17 +154,18 @@ This prevents “mixed stop types” bugs and ensures sampling terminates after 
 For each question \(p\), self-play training constructs a single coordinator shared by all \(N\) envs. The coordinator stores:
 
 - `current_agent_id` (global turn index modulo \(N\))
-- all parsed responses by round
-- `done` flag and `consensus_reached` flag
+- all parsed responses by turn
+- `done` flag
 
 Agents block on a condition variable until it is their turn. Although rollouts run envs concurrently, effective action order is sequential.
 
 ### Termination
 
-The episode ends at the end of a round if either:
-
-1) Every agent in that round outputs `<consensus>YES</consensus>`, or
-2) Round count reaches `max_rounds`.
+The episode ends after a fixed number of turns:
+\[
+\texttt{max\_turns} = N \cdot \texttt{max\_rounds}
+\]
+where `max_rounds` is interpreted as a number of full agent cycles.
 
 ### Per-step rewards and failure behavior
 
@@ -449,8 +446,7 @@ For each agent \(i\), the group reward computation emits:
 
 ### Per-step env metrics (per transition; then averaged)
 
-- `consensus_reached` (1 if coordinator has reached group consensus by this step)
-- `round` (current round index)
+- `cycle` (current cycle index)
 - `parse_error` (1 if parsing/turn-taking failed for that transition)
 
 ### RL aggregate metrics (computed from trajectory groups)
