@@ -172,6 +172,20 @@ class MultiAgentDebateEnv(Env):
                 and len(self.opponent_policies) == self.coordinator.state.num_agents - 1
             ), "Need N-1 opponent policies for non-self-play"
 
+        # Initialize summarizer components once if summarization is enabled
+        self._summarizer_policy: TinkerMessageCompleter | None = None
+        if self.summarize_history:
+            service_client = tinker.ServiceClient(base_url=self.base_url)
+            sampling_client = service_client.create_sampling_client(
+                base_model=self.summarize_model or self.model_name
+            )
+            self._summarizer_policy = TinkerMessageCompleter(
+                sampling_client=sampling_client,
+                renderer=self.renderer,
+                max_tokens=892,
+                stop_condition=_get_summarizer_stop_condition(self.renderer),
+            )
+
     @property
     def stop_condition(self) -> StopCondition:
         return _get_debate_stop_condition(self.renderer)
@@ -204,17 +218,12 @@ class MultiAgentDebateEnv(Env):
         return "\n".join(lines).rstrip()
 
     async def _summarize(self, history: str) -> str:
-        service_client = tinker.ServiceClient()
-        sampling_client = service_client.create_sampling_client(
-            base_model=self.summarize_model or self.model_name
-        )
-        # init the summarizer policy, sample from tinker message completer
-        self._summarizer_policy = TinkerMessageCompleter(
-            sampling_client=sampling_client,
-            renderer=self.renderer,
-            max_tokens=892,
-            stop_condition=_get_summarizer_stop_condition(self.renderer),
-        )
+        """Summarize debate history using the pre-initialized summarizer policy."""
+        if self._summarizer_policy is None:
+            raise RuntimeError(
+                "Summarizer not initialized. Set summarize_history=True to enable."
+            )
+
         messages: list[Message] = [
             {
                 "role": "system",
@@ -246,6 +255,7 @@ class MultiAgentDebateEnv(Env):
             f"Question: {question}\n"
             f"Previous turns of conversation:\n"
             f"{self._format_turns(turns, self.history_turns)}".rstrip()
+            + "\n"
         )
 
         return await self._summarize(history_turns) if self.summarize_history else history_turns
