@@ -1,6 +1,7 @@
 """Training script for multi-agent debate RL."""
 
 import asyncio
+import os
 from datetime import datetime
 
 import chz
@@ -18,8 +19,10 @@ class CLIConfig:
     """CLI configuration for multi-agent debate training."""
 
     model_name: str = "meta-llama/Llama-3.2-1B"
+    env: str = "non-verifiable"  # Options: verifiable, non-verifiable
     renderer_name: str | None = None
     num_agents: int = 3
+    max_rounds: int = 3
     batch_size: int = 16
     num_train_datapoints: int = 1024
     num_test_datapoints: int = 64
@@ -27,11 +30,14 @@ class CLIConfig:
     max_tokens: int = 8196
     eval_every: int = 10
     save_every: int = 20
-    max_rounds: int = 3
     reward_mode: str = "win_rate"  # "win_rate" | "win_minus_loss"
     history_rounds: int = 2  # -1 = entire history
     num_groups_to_log: int = 4  # 0 disables logtree; >=batch_size logs all groups
     log_full_transcript: bool = False  # include full per-group transcript in logtree
+    # Question splitting for eval. Set test_question_frac=0 to disable the split.
+    test_question_frac: float = 0.1
+    # Optional: fixed opponent base model for eval (defaults to model_name).
+    opponent_model_name: str | None = None
 
     # Prompt source (local JSONL by default; avoids network).
     dataset_path: str = "tinker_cookbook/example_data/nonverifiable_queries.jsonl"
@@ -66,32 +72,45 @@ def build_config(cli_config: CLIConfig) -> train.Config:
     if cli_config.log_path is not None:
         log_path = cli_config.log_path
     else:
-        log_path = f"/tmp/tinker-examples/multi-agent-debate/{run_name}"
+        log_path = f"~/tinker-examples/multi-agent-debate/{run_name}"
 
     if cli_config.wandb_name is not None:
         wandb_name = cli_config.wandb_name
     else:
         wandb_name = run_name
 
-    dataset_builder = MultiAgentDebateDatasetBuilder(
-        batch_size=cli_config.batch_size,
-        num_train_datapoints=cli_config.num_train_datapoints,
-        num_test_datapoints=cli_config.num_test_datapoints,
-        num_agents=cli_config.num_agents,
-        max_rounds=cli_config.max_rounds,
-        reward_mode=cli_config.reward_mode,
-        history_rounds=cli_config.history_rounds,
-        log_full_transcript=cli_config.log_full_transcript,
-        model_name=model_name,
-        renderer_name=renderer_name,
-        dataset_path=cli_config.dataset_path,
-        dataset_field=cli_config.dataset_field,
-        hf_dataset_name=cli_config.hf_dataset_name,
-        hf_dataset_subset=hf_subset,
-        hf_dataset_split=hf_split,
-        hf_dataset_question_field=cli_config.hf_dataset_question_field,
-        max_questions=cli_config.max_questions,
-    )
+    # Enable W&B when WANDB_PROJECT is set, even if the user doesn't pass wandb_project explicitly.
+    wandb_project = cli_config.wandb_project or os.environ.get("WANDB_PROJECT")
+    if wandb_name is None:
+        wandb_name = os.environ.get("WANDB_NAME") or run_name
+
+    if cli_config.env == "verifiable":
+        dataset_builder = None
+        # TODO: Implement verifiable dataset builder
+        raise NotImplementedError("Verifiable dataset builder not implemented")
+
+    elif cli_config.env == "non-verifiable":
+        dataset_builder = MultiAgentDebateDatasetBuilder(
+            batch_size=cli_config.batch_size,
+            num_train_datapoints=cli_config.num_train_datapoints,
+            num_test_datapoints=cli_config.num_test_datapoints,
+            num_agents=cli_config.num_agents,
+            max_rounds=cli_config.max_rounds,
+            reward_mode=cli_config.reward_mode,
+            history_rounds=cli_config.history_rounds,
+            log_full_transcript=cli_config.log_full_transcript,
+            model_name=model_name,
+            renderer_name=renderer_name,
+            dataset_path=cli_config.dataset_path,
+            dataset_field=cli_config.dataset_field,
+            test_question_frac=cli_config.test_question_frac,
+            opponent_model_name=cli_config.opponent_model_name,
+            hf_dataset_name=cli_config.hf_dataset_name,
+            hf_dataset_subset=hf_subset,
+            hf_dataset_split=hf_split,
+            hf_dataset_question_field=cli_config.hf_dataset_question_field,
+            max_questions=cli_config.max_questions,
+        )
 
     return train.Config(
         model_name=model_name,
@@ -102,7 +121,7 @@ def build_config(cli_config: CLIConfig) -> train.Config:
         eval_every=cli_config.eval_every,
         save_every=cli_config.save_every,
         num_groups_to_log=cli_config.num_groups_to_log,
-        wandb_project=cli_config.wandb_project,
+        wandb_project=wandb_project,
         wandb_name=wandb_name,
     )
 
