@@ -180,20 +180,27 @@ class MultiAgentDebateEnv(Env):
         """Get the system prompt for this agent."""
         return AGENT_SYSTEM_PROMPT.format(agent_id=self.agent_id)
 
-    def _format_turns(self, turns: list[ParsedResponse]) -> str:
+    def _format_turns(self, turns: list[ParsedResponse], num_turns: int) -> str:
         if not turns:
             return ""
         lines: list[str] = []
         for turn_idx, response in enumerate(turns, start=1):
-            lines.append(f"--- Turn {turn_idx} (Agent {response.author_id}) ---")
-            lines.append("Solution:")
+            # Only include the last `num_turns` turns
+            if num_turns > 0 and turn_idx <= len(turns) - num_turns and len(turns) > num_turns:
+                continue
+            lines.append(
+                f"== Turn {turn_idx}/{self.coordinator.state.max_turns} (Agent {response.author_id}) ==\n"
+            )
+            lines.append(f"Agent {response.author_id}'s Solution:")
             lines.append(response.solution.rstrip())
-            lines.append("Evaluation:")
+            lines.append("\n")
+            lines.append(f"Agent {response.author_id}'s Evaluation:")
             lines.append(response.evaluation.rstrip())
+            lines.append("\n")
             if response.comparison_text:
-                lines.append("Comparison:")
+                lines.append(f"Agent {response.author_id}'s Comparison:")
                 lines.append(response.comparison_text.rstrip())
-            lines.append("")
+            lines.append("== End of Turn ==\n")
         return "\n".join(lines).rstrip()
 
     async def _summarize(self, history: str) -> str:
@@ -219,6 +226,7 @@ class MultiAgentDebateEnv(Env):
                     "- Each agent's critiques/evaluations of others (including meta-evaluation)\n"
                     "- Any explicit comparisons (e.g. Agent 1 > Agent 0)\n"
                     "Do not add new information. Output plain text only."
+                    "Please add clear division lines between different turns."
                 ),
             },
             {"role": "user", "content": history},
@@ -234,33 +242,13 @@ class MultiAgentDebateEnv(Env):
         question = self.coordinator.state.question
         turns = list(self.coordinator.state.agent_responses)
 
-        # using full history without summarization
-        if not self.summarize_history:
-            return f"Question: {question}\n\n{self._format_turns(turns)}".rstrip()
+        history_turns = (
+            f"Question: {question}\n"
+            f"Previous turns of conversation:\n"
+            f"{self._format_turns(turns, self.history_turns)}".rstrip()
+        )
 
-        # using summarization for older turns
-        if self.history_turns < 0:
-            raw_recent = turns
-            older: list[ParsedResponse] = []
-        elif self.history_turns == 0:
-            raw_recent = []
-            older = turns
-        else:
-            raw_recent = turns[-self.history_turns :] if len(turns) > self.history_turns else turns
-            older = turns[: -self.history_turns] if len(turns) > self.history_turns else []
-
-        summary = ""
-        if older:
-            older_text = f"Question: {question}\n\n{self._format_turns(older)}"
-            summary = await self._summarize(older_text)
-
-        recent_text = self._format_turns(raw_recent)
-        parts: list[str] = [f"Question: {question}"]
-        if summary:
-            parts.append("\n--- Summary of earlier turns ---\n" + summary)
-        if recent_text:
-            parts.append("\n--- Recent turns (verbatim) ---\n" + recent_text)
-        return "\n".join(parts).rstrip()
+        return await self._summarize(history_turns) if self.summarize_history else history_turns
 
     async def initial_observation(self) -> tuple[Observation, StopCondition]:
         """Get the initial observation for this agent."""
@@ -317,29 +305,22 @@ class MultiAgentDebateEnv(Env):
         """Get the observation string for this agent."""
         history = await self.get_conversation_context()
         turn_idx = self.coordinator.state.current_turn
-        cycle_idx = self.coordinator.state.get_current_cycle()
-        max_cycles = self.coordinator.state.max_turns // self.coordinator.state.num_agents
+        # cycle_idx = self.coordinator.state.get_current_cycle()
+        # max_cycles = self.coordinator.state.max_turns // self.coordinator.state.num_agents
 
         # intermission prompt for first turn
         if turn_idx == 0:
             return (
                 f"Question: {self.coordinator.state.question}\n\n"
-                f"Cycle {cycle_idx + 1} of {max_cycles}, Turn {turn_idx + 1}.\n"
                 "First completion: propose your solution.\n"
                 'Set <evaluation> to "N/A" and <comparison> to "N/A".'
             )
-
-        # regular turn prompt, we use cycle/turn counting starting from 1 for user-friendliness
-        # may help models better track progress
-        return (
-            f"{history}\n\n"
-            f"Cycle {cycle_idx + 1} of {max_cycles}, Turn {turn_idx + 1}.\n"
-            "Write a solution to the user query.\n"
-            "In <evaluation>, evaluate the most recent visible prior completions (up to 2 turns), including their solutions "
-            "and their evaluations/comparisons (meta-evaluate judge quality).\n"
-            "In <comparison>, compare only OTHER agents visible in the history (never include yourself). If fewer than two "
-            'other completions are visible, write "N/A".'
-        )
+        else:
+            # regular turn prompt
+            return (
+                f"{history}\n\nQuestion: {self.coordinator.state.question}\n\n"
+                "Please continue the debate by providing your solution, evaluation, and comparison."
+            )
 
     async def get_observation(self) -> types.ModelInput:
         """Get the current observation for this agent."""

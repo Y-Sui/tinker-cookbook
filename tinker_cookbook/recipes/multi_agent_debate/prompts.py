@@ -3,40 +3,73 @@
 import re
 from dataclasses import dataclass
 
-AGENT_SYSTEM_PROMPT = """You are Agent {agent_id} participating in a multi-agent self-play discussion to collaboratively answer an open-ended, non-verifiable user query.
+AGENT_SYSTEM_PROMPT = """You are Agent {agent_id} participating in a multi-agent self-play discussion to collaboratively answer user query.
 
-Your objectives:
+OBJECTIVES:
 - Propose or refine a high-quality, detailed solution to the query.
-- Evaluate other agents' recent contributions (including their solutions AND their evaluations of others), which includes:
-   - Critiquing their solution quality,
-   - Assessing the fairness/helpfulness of their evaluations (including meta-evaluating their critique quality),
-   - Reviewing the fairness/helpfulness of their comparisons.
-- Provide pairwise overall comparisons (solution + evaluation + comparison) between other agents’ completions. (Do NOT compare yourself.)
+- Evaluate other agents' contributions across three dimensions:
+   - Solution quality: Assess the correctness, completeness, and reasoning of their proposed solutions
+   - Evaluation quality (meta-evaluation): Critique the fairness, accuracy, and helpfulness of their assessments of other agents
+   - Comparison quality: Review whether their pairwise rankings are justified and consistent
+- Provide pairwise rankings comparing other agents' overall contributions (solution + evaluation + comparison combined) (Do NOT compare yourself.)
 
-Special instructions:
-- Carefully reason through your solution and all evaluations before reaching any final conclusions. For each section, separate out your reasoning and ONLY then reach a conclusion or classification.
-- The <solution> comes first and should NOT include any conclusions about relative agent performance. The <evaluation> is next (reasoning and then judgments about others), followed by <comparison> (pairwise rankings of other agents’ total output).
-- Maintain the exact order and formatting for XML tags as given.
+CRITICAL INSTRUCTIONS:
+- Use chain-of-thought reasoning throughout: First explain your reasoning, THEN state conclusions
+- Maintain strict XML tag order: <solution>, <evaluation>, <comparison>
+- In <solution>: Focus solely on answering the query—make NO judgments about other agents
+- In <evaluation> and <comparison>: Exclude yourself (Agent {agent_id}) from all assessments
+- Follow the exact XML formatting specified below
 
-OUTPUT FORMAT (use exact XML tags, in this order):
+---
+
+OUTPUT FORMAT (strict order required):
 
 <solution>
-Your detailed, well-reasoned answer or proposal. Avoid making summary or comparison statements here.
+[Provide your detailed, well-reasoned answer to the user query here. Use step-by-step reasoning where appropriate. Do NOT mention, compare, or evaluate other agents in this section.]
 </solution>
 
 <evaluation>
-Carefully assess the other agents’ recent work. Provide reasoning for each critique (both solution critique and meta-evaluation of their assessment/comparison quality), and only then draw any judgment or classification.
-- If there are no prior completions visible in the conversation history, write "N/A" here.
+[Please review the previous turns of conversation from other agents, including their solutions, evaluations, and comparisons.
+For each other agent's contribution, provide:
+1. **Solution critique**: Analyze the quality, completeness, and reasoning of their proposed solution
+2. **Meta-evaluation**: Assess whether their evaluations of other agents are fair, accurate, and constructive
+3. **Comparison quality review**: Evaluate whether their pairwise rankings are justified and consistent
+
+Should explain what you observe and why it matters for each critique (both solution critique and meta-evaluation of their assessment/comparison quality), and only then draw any judgment or classification.
+- If there are no prior completions visible in the conversation history, write "N/A" here.]
 </evaluation>
 
 <comparison>
-For all unordered pairs of the other agents’ completions, provide pairwise rankings or ties (e.g., "Agent 1 > Agent 2"). Only do this after fully evaluating the agents. Never include yourself in any comparison. List one line per pair.  
-- If there are fewer than two other completions visible in the conversation history, write "N/A" here.
+[Please review the previous turns of conversation from other agents. Carefully compare their overall contributions (solution + evaluation + comparison). Then, provide pairwise rankings or ties between all unordered pairs of the other agents’ completions. (e.g., "Agent 1 > Agent 2") Never compare yourself. 
+Previous conversation format is as follows:
+== Turn current_turn_idx/max_turns (Agent agent_id) ==
+Agent agent_id's Solution:
+solution text
+Agent agent_id's Evaluation:
+evaluation text
+Agent agent_id's Comparison:
+comparison text
+== End of Turn ==
+
+Output pairwise rankings using this format:
+Agent X > Agent Y    [Agent X's overall contribution is stronger]
+Agent A = Agent B    [Contributions are roughly equal in quality]
+Agent M < Agent N    [Agent M's contribution is weaker]
+
+...
+Requirements:
+- Only do this after fully evaluating the agents. 
+- Compare ALL unordered pairs of other agents (Never include yourself agent-{agent_id} in any comparison. )
+- One comparison per line
+- Use only >, <, or = operators
+- Base rankings on combined quality across solution, evaluation, and comparison
+- If there are fewer than two other agents, write "N/A" here.]
 </comparison>
 
 Key Reminders:
-- Use EXACTLY these three XML tags, in strict order, with no extra wrapping or markdown.
-- Do NOT compare your own work in the <comparison> section.
+- Use EXACTLY these three XML tags: <solution>, <evaluation>, <comparison>
+- No additional wrapping tags, markdown code blocks, or commentary outside tags
+- Never include "Agent {agent_id}" (yourself) in <evaluation> or <comparison> sections
 
 Objective summary:  
 Propose a high-quality solution; evaluate and compare other agents’ solution/evaluation/comparison content using the provided XML tags and order, always reasoning before reaching conclusions.
@@ -83,56 +116,86 @@ def parse_agent_response(
         response = re.sub(r"\n```$", "", response)
         response = response.strip()
 
-    # If there's preamble text, start at the first structured tag.
-    first_tag = re.search(r"<(solution|evaluation|comparison)\b", response)
-    if first_tag:
-        response = response[first_tag.start() :]
+    # Remove Qwen-style thinking blocks entirely, but keep them for logging/debugging.
+    # Important: sometimes the model mentions literal "<solution>" in its preamble/thoughts,
+    # and we must not treat those as the actual structured output.
+    thinking_chunks = re.findall(r"<think>(.*?)</think>", response, flags=re.IGNORECASE | re.DOTALL)
+    thinking = "\n\n".join(chunk.strip() for chunk in thinking_chunks if chunk.strip())
+    response = re.sub(r"<think>.*?</think>", "", response, flags=re.IGNORECASE | re.DOTALL).strip()
 
-    # Handle Qwen-style thinking wrappers. Keep the content (it may contain our XML tags),
-    # but remove the wrapper tags to avoid confusing downstream parsing.
-    response = re.sub(r"</?think>", "", response, flags=re.IGNORECASE).strip()
+    # Prefer parsing the *last* complete XML block in the message.
+    # This avoids accidentally parsing tag-shaped text in the model's preamble/reasoning.
+    # Require tags to start on a new line (or start-of-string). This avoids matching
+    # tag-shaped text embedded inside the model's preamble, e.g. "... like <solution> is first ...".
+    block_pattern = re.compile(
+        r"^\s*<solution>\s*(?P<solution>.*?)</solution>\s*"
+        r"^\s*<evaluation>\s*(?P<evaluation>.*?)</evaluation>\s*"
+        r"^\s*<comparison>\s*(?P<comparison>.*?)</comparison>\s*$",
+        flags=re.DOTALL | re.IGNORECASE | re.MULTILINE,
+    )
+    block_matches = list(block_pattern.finditer(response))
+    if block_matches:
+        match = block_matches[-1]
+        solution = match.group("solution").strip()
+        evaluation = match.group("evaluation").strip()
+        comparison_text = match.group("comparison").strip()
+        raw_response = match.group(0).strip()
+    else:
+        # Fallback: older behavior where <comparison> might be missing.
+        raw_response = response
 
-    # Extract solution (required)
-    solution_match = re.search(r"<solution>(.*?)</solution>", response, re.DOTALL)
-    if not solution_match:
-        raise ValueError(f"Missing <solution> tag in response: {response[:200]}")
-    solution = solution_match.group(1).strip()
+        solution_matches = list(
+            re.finditer(
+                r"^\s*<solution>\s*(.*?)</solution>\s*$",
+                response,
+                flags=re.DOTALL | re.IGNORECASE | re.MULTILINE,
+            )
+        )
+        if not solution_matches:
+            raise ValueError(f"Missing <solution> tag in response: {response[:200]}")
+        solution = solution_matches[-1].group(1).strip()
 
-    # Extract evaluation (required)
-    evaluation_match = re.search(r"<evaluation>(.*?)</evaluation>", response, re.DOTALL)
-    if not evaluation_match:
-        raise ValueError(f"Missing <evaluation> tag in response: {response[:200]}")
-    evaluation = evaluation_match.group(1).strip()
+        evaluation_matches = list(
+            re.finditer(
+                r"^\s*<evaluation>\s*(.*?)</evaluation>\s*$",
+                response,
+                flags=re.DOTALL | re.IGNORECASE | re.MULTILINE,
+            )
+        )
+        if not evaluation_matches:
+            raise ValueError(f"Missing <evaluation> tag in response: {response[:200]}")
+        evaluation = evaluation_matches[-1].group(1).strip()
 
-    comparisons = []
-    comparison_text = ""
-    comp_match = re.search(r"<comparison>(.*?)</comparison>", response, re.DOTALL | re.IGNORECASE)
-    if comp_match:
-        content = comp_match.group(1).strip()
-        comparison_text = content
-        # Regex to find "Agent A > Agent B"
-        pairs = re.findall(r"Agent\s+(\d+)\s*([>=])\s*Agent\s+(\d+)", content)
-        self_comparisons_dropped = 0
+        comp_matches = list(
+            re.finditer(
+                r"^\s*<comparison>\s*(.*?)</comparison>\s*$",
+                response,
+                flags=re.DOTALL | re.IGNORECASE | re.MULTILINE,
+            )
+        )
+        comparison_text = comp_matches[-1].group(1).strip() if comp_matches else ""
+
+    comparisons: list[tuple[int, str, int]] = []
+    self_comparisons_dropped = 0
+    if comparison_text:
+        pairs = re.findall(r"Agent\s+(\d+)\s*([>=])\s*Agent\s+(\d+)", comparison_text)
         for agent_a, op, agent_b in pairs:
             a_id = int(agent_a)
             b_id = int(agent_b)
-
-            # Enforce: the author must not compare themselves.
             if a_id == author_id or b_id == author_id:
                 self_comparisons_dropped += 1
                 continue
             comparisons.append((a_id, op, b_id))
-    else:
-        self_comparisons_dropped = 0
 
     return ParsedResponse(
         solution=solution,
         evaluation=evaluation,
         comparisons=comparisons,
-        raw_response=response,
+        raw_response=raw_response,
         comparison_text=comparison_text,
         author_id=author_id,
         observation=observation,
+        thinking=thinking,
         self_comparisons_dropped=self_comparisons_dropped,
     )
 
