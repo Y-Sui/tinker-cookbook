@@ -2,7 +2,13 @@ import asyncio
 import logging
 from datetime import datetime
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 import chz
+from tinker.types import LossFnType
+
 from tinker_cookbook import cli_utils, model_info
 from tinker_cookbook.recipes.math_rl import (
     arithmetic_env,
@@ -10,7 +16,6 @@ from tinker_cookbook.recipes.math_rl import (
 )
 from tinker_cookbook.rl.train import AsyncConfig, Config, main
 from tinker_cookbook.rl.types import RLDatasetBuilder
-from tinker.types import LossFnType
 
 logger = logging.getLogger(__name__)
 

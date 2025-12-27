@@ -34,30 +34,12 @@ from .reward import (
     compute_pairwise_win_minus_loss,
     compute_pairwise_win_rates,
 )
-
-# Stop when we see the closing tag of the last required field
-STOP_CONDITION = ["</comparison>"]
-
-
-def _get_debate_stop_condition(renderer: Renderer) -> StopCondition:
-    """
-    Pick stop sequences that are compatible with the active renderer.
-
-    - Token-based renderers (e.g. `llama3`) return `list[int]` stop tokens; we must not mix in strings.
-    - Text-based renderers (e.g. `role_colon`) return `list[str]` stop sequences; we can add debate-specific tags.
-    """
-    renderer_stop = renderer.get_stop_sequences()
-    if not renderer_stop:
-        return STOP_CONDITION
-    if isinstance(renderer_stop[0], int):
-        return renderer_stop
-    # De-duplicate while preserving order
-    return list(dict.fromkeys([*renderer_stop, *STOP_CONDITION]))
-
-
-def _get_summarizer_stop_condition(renderer: Renderer) -> StopCondition:
-    renderer_stop = renderer.get_stop_sequences()
-    return renderer_stop or []
+from .utils import (
+    STOP_CONDITION,
+    _get_debate_stop_condition,
+    _get_summarizer_stop_condition,
+    _log_debate_transcript,
+)
 
 
 @dataclass
@@ -410,6 +392,9 @@ class MultiAgentEnvGroupBuilder(EnvGroupBuilder):
     # Optional fixed opponents for non-self-play evaluation. When provided, should have
     # length == num_agents, and we will pass per-env lists with the controlled agent removed.
     model_name: str | None = None
+    # For non-self-play, optionally train/eval only one fixed "seat" (agent position).
+    # If None, we create one env per seat (agent_id=0..num_agents-1), like a leave-one-out setup.
+    controlled_agent_id: int | None = None
 
     def _construct_fixed_opponent_policies(
         self, renderer: Renderer
@@ -452,29 +437,53 @@ class MultiAgentEnvGroupBuilder(EnvGroupBuilder):
                 for i in range(self.num_agents)
             ]
 
-        # Role-averaged evaluation: each env is an independent debate where the *controlled* agent
-        # is `agent_id=i`, and all other agents are played by fixed opponent policies.
-        else:
-            envs: list[MultiAgentDebateEnv] = []
-            opponent_policies = self._construct_fixed_opponent_policies(self.renderer)
-            for i in range(self.num_agents):
-                coordinator = MultiAgentCoordinator(
-                    question=question, num_agents=self.num_agents, max_turns=max_turns
+        # Non-self-play
+        opponent_policies = self._construct_fixed_opponent_policies(self.renderer)
+
+        # Fixed seat: only return one env (simpler metrics; evaluates only agent 0 by default).
+        if self.controlled_agent_id is not None:
+            if not 0 <= self.controlled_agent_id < self.num_agents:
+                raise ValueError(
+                    f"controlled_agent_id must be in [0, {self.num_agents}). "
+                    f"Got {self.controlled_agent_id}."
                 )
-                envs.append(
-                    MultiAgentDebateEnv(
-                        agent_id=i,  # controlled agent at position i
-                        coordinator=coordinator,
-                        renderer=self.renderer,
-                        self_play=False,  # use opponent policies
-                        opponent_policies=opponent_policies,  # N-1 base model policies
-                        history_turns=self.history_turns,
-                        summarize_history=self.summarize_history,
-                        summarize_model=self.summarize_model,
-                        model_name=self.model_name,
-                    )
+            coordinator = MultiAgentCoordinator(
+                question=question, num_agents=self.num_agents, max_turns=max_turns
+            )
+            return [
+                MultiAgentDebateEnv(
+                    agent_id=self.controlled_agent_id,
+                    coordinator=coordinator,
+                    renderer=self.renderer,
+                    self_play=False,
+                    opponent_policies=opponent_policies,
+                    history_turns=self.history_turns,
+                    summarize_history=self.summarize_history,
+                    summarize_model=self.summarize_model,
+                    model_name=self.model_name,
                 )
-            return envs
+            ]
+
+        # Leave-one-out seats: one env per controlled seat position.
+        envs: list[MultiAgentDebateEnv] = []
+        for i in range(self.num_agents):
+            coordinator = MultiAgentCoordinator(
+                question=question, num_agents=self.num_agents, max_turns=max_turns
+            )
+            envs.append(
+                MultiAgentDebateEnv(
+                    agent_id=i,  # controlled agent at position i
+                    coordinator=coordinator,
+                    renderer=self.renderer,
+                    self_play=False,  # use opponent policies
+                    opponent_policies=opponent_policies,  # N-1 base model policies
+                    history_turns=self.history_turns,
+                    summarize_history=self.summarize_history,
+                    summarize_model=self.summarize_model,
+                    model_name=self.model_name,
+                )
+            )
+        return envs
 
     async def compute_group_rewards(
         self, trajectory_group: list[Trajectory], env_group: Sequence[Env]
@@ -490,32 +499,7 @@ class MultiAgentEnvGroupBuilder(EnvGroupBuilder):
             if self.log_full_transcript:
                 # If logtree logging is enabled by the outer RL harness, emit the full multi-agent transcript.
                 # This is the easiest way to inspect the entire conversation across all turns/agents.
-                with logtree.scope_header("Debate Transcript"):
-                    logtree.log_text(f"Question: {coordinator.state.question}")
-                    turns = coordinator.state.agent_responses
-                    if not turns:
-                        logtree.log_text("(No responses captured)")
-                    for turn_idx, response in enumerate(turns, start=1):
-                        with logtree.scope_header(f"Turn {turn_idx}"):
-                            with logtree.scope_header(f"Agent {response.author_id}"):
-                                with logtree.scope_details("System prompt"):
-                                    logtree.log_text(
-                                        AGENT_SYSTEM_PROMPT.format(agent_id=response.author_id)
-                                    )
-                                if response.observation:
-                                    with logtree.scope_details("Observation (context)"):
-                                        logtree.log_text(response.observation)
-                                if response.solution:
-                                    with logtree.scope_details("Solution"):
-                                        logtree.log_text(response.solution)
-                                if response.evaluation:
-                                    with logtree.scope_details("Evaluation"):
-                                        logtree.log_text(response.evaluation)
-                                if response.comparison_text:
-                                    with logtree.scope_details("Comparison"):
-                                        logtree.log_text(response.comparison_text)
-                                with logtree.scope_details("Raw response"):
-                                    logtree.log_text(response.raw_response)
+                _log_debate_transcript(coordinator)
 
             # Leave-one-out rewards: agent i's reward excludes comparisons authored by i.
             if self.reward_mode == "win_rate":
@@ -553,6 +537,9 @@ class MultiAgentEnvGroupBuilder(EnvGroupBuilder):
         for env in env_group:
             assert isinstance(env, MultiAgentDebateEnv)
             coordinator = env.coordinator
+            if self.log_full_transcript:
+                with logtree.scope_header(f"Non-self-play Transcript (seat={env.agent_id})"):
+                    _log_debate_transcript(coordinator)
             if self.reward_mode == "win_rate":
                 rewards_G, summary_metrics = compute_pairwise_win_rates(
                     coordinator.state.agent_responses, num_agents=self.num_agents
@@ -602,6 +589,7 @@ class MultiAgentDebateDataset(RLDataset):
         max_rounds: int,
         num_datapoints: int,
         model_name: str,
+        non_self_play_controlled_agent_id: int | None = 0,
     ):
         self.batch_size = batch_size
         self.questions = questions
@@ -616,6 +604,7 @@ class MultiAgentDebateDataset(RLDataset):
         self.max_rounds = max_rounds
         self.num_datapoints = num_datapoints
         self.model_name = model_name
+        self.non_self_play_controlled_agent_id = non_self_play_controlled_agent_id
 
     def get_batch(self, index: int) -> Sequence[EnvGroupBuilder]:
         """Get a batch of environment group builders."""
@@ -636,6 +625,9 @@ class MultiAgentDebateDataset(RLDataset):
                 log_full_transcript=self.log_full_transcript,
                 max_rounds=self.max_rounds,
                 model_name=self.model_name,
+                controlled_agent_id=(
+                    self.non_self_play_controlled_agent_id if not self.self_play else None
+                ),
             )
             for question_index in range(batch_start, batch_end)
         ]
@@ -661,6 +653,8 @@ class MultiAgentDebateDatasetBuilder(RLDatasetBuilder):
     log_full_transcript: bool = False
     model_name: str
     renderer_name: str
+    # If set, non-self-play env-groups create only one env (fixed seat) instead of one per seat.
+    non_self_play_controlled_agent_id: int | None = 0
     # Prompt source: local JSONL by default (no network).
     dataset_path: str = "tinker_cookbook/example_data/nonverifiable_queries.jsonl"
     dataset_field: str = "query"
@@ -775,6 +769,7 @@ class MultiAgentDebateDatasetBuilder(RLDatasetBuilder):
             max_rounds=self.max_rounds,
             num_datapoints=self.num_train_datapoints,
             model_name=self.model_name,
+            non_self_play_controlled_agent_id=self.non_self_play_controlled_agent_id,
         )
 
         # Test dataset (optional). If num_test_datapoints is 0, disable test set entirely.
@@ -796,6 +791,7 @@ class MultiAgentDebateDatasetBuilder(RLDatasetBuilder):
                 max_rounds=self.max_rounds,
                 num_datapoints=self.num_test_datapoints,
                 model_name=self.model_name,
+                non_self_play_controlled_agent_id=self.non_self_play_controlled_agent_id,
             )
 
         return train_dataset, test_dataset

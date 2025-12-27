@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 
 from tinker_cookbook import cli_utils, model_info
 from tinker_cookbook.recipes.multi_agent_debate.env import MultiAgentDebateDatasetBuilder
-from tinker_cookbook.recipes.multi_agent_debate.verifiable_math_env import (
+from tinker_cookbook.recipes.multi_agent_debate.verifiable_env import (
     VerifiableMathDebateDatasetBuilder,
 )
 from tinker_cookbook.rl import train
@@ -109,6 +109,7 @@ def build_config(cli_config: CLIConfig) -> train.Config:
             log_full_transcript=cli_config.log_full_transcript,
             model_name=model_name,
             renderer_name=renderer_name,
+            # non_self_play_controlled_agent_id=0,
             dataset_path=cli_config.verifiable_dataset_path,
             problem_field=cli_config.verifiable_problem_field,
             answer_field=cli_config.verifiable_answer_field,
@@ -132,6 +133,7 @@ def build_config(cli_config: CLIConfig) -> train.Config:
             log_full_transcript=cli_config.log_full_transcript,
             model_name=model_name,
             renderer_name=renderer_name,
+            non_self_play_controlled_agent_id=0,
             dataset_path=cli_config.dataset_path,
             dataset_field=cli_config.dataset_field,
             test_question_frac=cli_config.test_question_frac,
