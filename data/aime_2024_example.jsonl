@@ -1,0 +1,3 @@
+{"problem": "Find the number of positive integers less than 1000 that can be expressed as the difference of two integral powers of 2.", "answer": "101", "id": "aime_2024_1", "year": 2024}
+{"problem": "Let $S$ be the set of all positive integer divisors of $100{,}000.$ How many numbers are the product of two distinct elements of $S$?", "answer": "283", "id": "aime_2024_2", "year": 2024}
+{"problem": "A $3-4-5$ right triangle is rotated about the side of length $4,$ sweeping out a cone. What is the volume of this cone?", "answer": "20\\pi", "id": "aime_2024_3", "year": 2024}
