@@ -43,23 +43,16 @@ class CLIConfig:
     # Question splitting for eval. Set test_question_frac=0 to disable the split.
     test_question_frac: float = 0.1
 
-    # Prompt source (local JSONL by default; avoids network).
-    dataset_path: str = "tinker_cookbook/example_data/nonverifiable_queries.jsonl"
-    dataset_field: str = "query"
+    # Non-verifiable prompt source (local JSONL by default; avoids network).
+    non_verifiable_dataset_path: str = "tinker_cookbook/data/longwriter_6k_sample.jsonl"
+    non_verifiable_dataset_field: str = "query"
 
     # Verifiable (math-style) prompt source (local JSONL by default; avoids network).
-    verifiable_dataset_path: str = "tinker_cookbook/example_data/verifiable_math_problems.jsonl"
+    verifiable_dataset_path: str = "tinker_cookbook/data/aime2024_sample.jsonl"
     verifiable_problem_field: str = "problem"
     verifiable_answer_field: str = "answer"
     verifiable_grader: Literal["sympy", "math_verify"] = "sympy"
-    verifiable_grade_timeout: float = 1.0
-    verifiable_format_coef: float = 0.1
 
-    # Optional HF dataset (requires network access).
-    hf_dataset_name: str | None = None
-    hf_dataset_subset: str | None = None
-    hf_dataset_split: str = "train"
-    hf_dataset_question_field: str = "question"
     max_questions: int = 1000
     wandb_project: str | None = None
     wandb_name: str | None = None
@@ -72,8 +65,6 @@ def build_config(cli_config: CLIConfig) -> train.Config:
     renderer_name = cli_config.renderer_name or model_info.get_recommended_renderer_name(
         cli_config.model_name
     )
-    hf_subset = cli_config.hf_dataset_subset
-    hf_split = cli_config.hf_dataset_split
 
     date_and_time = datetime.now().strftime("%Y-%m-%d-%H-%M")
     run_name = (
@@ -109,14 +100,11 @@ def build_config(cli_config: CLIConfig) -> train.Config:
             log_full_transcript=cli_config.log_full_transcript,
             model_name=model_name,
             renderer_name=renderer_name,
-            # non_self_play_controlled_agent_id=0,
             dataset_path=cli_config.verifiable_dataset_path,
             problem_field=cli_config.verifiable_problem_field,
             answer_field=cli_config.verifiable_answer_field,
             test_question_frac=cli_config.test_question_frac,
             grader=cli_config.verifiable_grader,
-            grade_timeout=cli_config.verifiable_grade_timeout,
-            format_coef=cli_config.verifiable_format_coef,
         )
 
     elif cli_config.env == "non-verifiable":
@@ -133,14 +121,9 @@ def build_config(cli_config: CLIConfig) -> train.Config:
             log_full_transcript=cli_config.log_full_transcript,
             model_name=model_name,
             renderer_name=renderer_name,
-            non_self_play_controlled_agent_id=0,
-            dataset_path=cli_config.dataset_path,
-            dataset_field=cli_config.dataset_field,
+            dataset_path=cli_config.non_verifiable_dataset_path,
+            dataset_field=cli_config.non_verifiable_dataset_field,
             test_question_frac=cli_config.test_question_frac,
-            hf_dataset_name=cli_config.hf_dataset_name,
-            hf_dataset_subset=hf_subset,
-            hf_dataset_split=hf_split,
-            hf_dataset_question_field=cli_config.hf_dataset_question_field,
             max_questions=cli_config.max_questions,
         )
 

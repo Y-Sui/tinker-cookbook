@@ -21,6 +21,12 @@ import tinker
 from tinker import types
 
 from tinker_cookbook.completers import StopCondition, TinkerMessageCompleter
+from tinker_cookbook.recipes.math_rl.math_grading import (
+    extract_boxed,
+    grade_answer,
+    grade_answer_math_verify,
+    run_with_timeout_signal,
+)
 from tinker_cookbook.renderers import Message, Renderer, ensure_text, get_renderer
 from tinker_cookbook.rl.types import (
     Action,
@@ -36,16 +42,8 @@ from tinker_cookbook.rl.types import (
 from tinker_cookbook.tokenizer_utils import get_tokenizer
 from tinker_cookbook.utils import logtree
 
-from tinker_cookbook.recipes.math_rl.math_grading import (
-    extract_boxed,
-    grade_answer,
-    grade_answer_math_verify,
-    run_with_timeout_signal,
-)
-
 from .prompts import ParsedResponse
 from .verifiable_env import MultiAgentCoordinator
-
 
 VERIFIABLE_AGENT_SYSTEM_PROMPT = """You are Agent {agent_id} participating in a multi-agent self-play debate to solve a verifiable math problem.
 
@@ -387,9 +385,7 @@ class VerifiableMultiAgentEnvGroupBuilder(EnvGroupBuilder):
     log_full_transcript: bool = False
     opponent_policies_all: list[TinkerMessageCompleter] | None = None
     model_name: str | None = None
-    format_coef: float = 0.1
     grader: Literal["sympy", "math_verify"] = "sympy"
-    grade_timeout: float = 1.0
 
     async def make_envs(self) -> Sequence[Env]:
         problem = self.problems[self.problem_index % len(self.problems)]
@@ -454,7 +450,9 @@ class VerifiableMultiAgentEnvGroupBuilder(EnvGroupBuilder):
             coordinator: MultiAgentCoordinator,
             agent_id: int,
         ) -> tuple[float, Metrics]:
-            latest = _latest_response_by_author(coordinator.state.agent_responses, author_id=agent_id)
+            latest = _latest_response_by_author(
+                coordinator.state.agent_responses, author_id=agent_id
+            )
             if latest is None:
                 reward = -self.format_coef
                 return (
@@ -475,7 +473,6 @@ class VerifiableMultiAgentEnvGroupBuilder(EnvGroupBuilder):
                     boxed,
                     ground_truth,
                     grader=self.grader,
-                    timeout=self.grade_timeout,
                 )
             correct_f = 1.0 if correct else 0.0
             format_f = 1.0 if has_box else 0.0
@@ -520,7 +517,9 @@ class VerifiableMultiAgentEnvGroupBuilder(EnvGroupBuilder):
 
             rewards_and_metrics: list[tuple[float, Metrics]] = []
             for agent_id in range(self.num_agents):
-                reward, metrics = compute_one_agent_reward(coordinator=coordinator, agent_id=agent_id)
+                reward, metrics = compute_one_agent_reward(
+                    coordinator=coordinator, agent_id=agent_id
+                )
                 with logtree.scope_header(f"Verifiable Reward (Agent {agent_id})"):
                     logtree.log_text(f"Ground truth: {ground_truth}")
                     logtree.log_text(
@@ -555,7 +554,9 @@ class VerifiableMultiAgentEnvGroupBuilder(EnvGroupBuilder):
                                 with logtree.scope_details("Raw response"):
                                     logtree.log_text(response.raw_response)
 
-            reward, metrics = compute_one_agent_reward(coordinator=coordinator, agent_id=env.agent_id)
+            reward, metrics = compute_one_agent_reward(
+                coordinator=coordinator, agent_id=env.agent_id
+            )
             rewards_and_metrics.append((reward, metrics))
 
         return rewards_and_metrics
@@ -577,9 +578,7 @@ class VerifiableMathDebateDataset(RLDataset):
         num_datapoints: int,
         model_name: str,
         opponent_policies: list[TinkerMessageCompleter] | None = None,
-        format_coef: float = 0.1,
         grader: Literal["sympy", "math_verify"] = "sympy",
-        grade_timeout: float = 1.0,
     ):
         self.batch_size = batch_size
         self.problems = problems
@@ -594,9 +593,7 @@ class VerifiableMathDebateDataset(RLDataset):
         self.num_datapoints = num_datapoints
         self.model_name = model_name
         self.opponent_policies = opponent_policies
-        self.format_coef = format_coef
         self.grader = grader
-        self.grade_timeout = grade_timeout
 
     def get_batch(self, index: int) -> Sequence[EnvGroupBuilder]:
         batch_start = index * self.batch_size
@@ -616,9 +613,7 @@ class VerifiableMathDebateDataset(RLDataset):
                 max_rounds=self.max_rounds,
                 model_name=self.model_name,
                 opponent_policies_all=self.opponent_policies,
-                format_coef=self.format_coef,
                 grader=self.grader,
-                grade_timeout=self.grade_timeout,
             )
             for problem_index in range(batch_start, batch_end)
         ]
@@ -647,9 +642,7 @@ class VerifiableMathDebateDatasetBuilder(RLDatasetBuilder):
     max_questions: int = 1000
     test_question_frac: float = 0.1
     opponent_model_name: str | None = None
-    format_coef: float = 0.1
     grader: Literal["sympy", "math_verify"] = "sympy"
-    grade_timeout: float = 1.0
 
     def _load_problems_from_file(self) -> list[VerifiableMathProblem]:
         import json
@@ -694,7 +687,9 @@ class VerifiableMathDebateDatasetBuilder(RLDatasetBuilder):
         test_n = max(1, min(test_n, len(shuffled) - 1))
         return shuffled[test_n:], shuffled[:test_n]
 
-    def _construct_fixed_opponent_policies(self, renderer: Renderer) -> list[TinkerMessageCompleter]:
+    def _construct_fixed_opponent_policies(
+        self, renderer: Renderer
+    ) -> list[TinkerMessageCompleter]:
         service_client = tinker.ServiceClient()
         sampling_client = service_client.create_sampling_client(
             base_model=self.opponent_model_name or self.model_name
@@ -754,9 +749,7 @@ class VerifiableMathDebateDatasetBuilder(RLDatasetBuilder):
                 num_datapoints=self.num_test_datapoints,
                 model_name=self.model_name,
                 opponent_policies=opponent_policies_all,
-                format_coef=self.format_coef,
                 grader=self.grader,
-                grade_timeout=self.grade_timeout,
             )
 
         return train_dataset, test_dataset

@@ -1,8 +1,8 @@
 from typing import TYPE_CHECKING
 
-from tinker_cookbook import logtree
 from tinker_cookbook.completers import StopCondition
 from tinker_cookbook.renderers import Renderer
+from tinker_cookbook.utils import logtree
 
 if TYPE_CHECKING:
     from tinker_cookbook.recipes.multi_agent_debate.env import MultiAgentCoordinator

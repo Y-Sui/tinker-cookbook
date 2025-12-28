@@ -653,24 +653,15 @@ class MultiAgentDebateDatasetBuilder(RLDatasetBuilder):
     log_full_transcript: bool = False
     model_name: str
     renderer_name: str
-    # If set, non-self-play env-groups create only one env (fixed seat) instead of one per seat.
-    non_self_play_controlled_agent_id: int | None = 0
     # Prompt source: local JSONL by default (no network).
     dataset_path: str = "tinker_cookbook/example_data/nonverifiable_queries.jsonl"
     dataset_field: str = "query"
     # If enabled, split loaded questions into disjoint train/test pools.
     test_question_frac: float = 0.1  # used only if num_test_datapoints > 0
 
-    # Optional HF dataset loading (requires network).
-    hf_dataset_name: str | None = None
-    hf_dataset_subset: str | None = None
-    hf_dataset_split: str = "train"
-    hf_dataset_question_field: str = "question"
     max_questions: int = 1000
 
     def load_questions(self) -> list[str]:
-        if self.hf_dataset_name is not None:
-            return self._load_questions_from_hf()
         return self._load_questions_from_file()
 
     def get_question_pools(self) -> tuple[list[str], list[str]]:
@@ -693,41 +684,6 @@ class MultiAgentDebateDatasetBuilder(RLDatasetBuilder):
                 questions.append(str(data[self.dataset_field]))
         if not questions:
             raise ValueError(f"No questions loaded from {self.dataset_path}")
-        return questions
-
-    def _load_questions_from_hf(self) -> list[str]:
-        """Load questions from HuggingFace dataset."""
-        from datasets import load_dataset
-
-        print(
-            f"Loading questions from HF dataset {self.hf_dataset_name}, "
-            f"split {self.hf_dataset_split}, subset {self.hf_dataset_subset}..."
-        )
-        if self.hf_dataset_subset is not None:
-            dataset = load_dataset(
-                self.hf_dataset_name,
-                self.hf_dataset_subset,
-                split=self.hf_dataset_split,
-            )
-        else:
-            dataset = load_dataset(
-                self.hf_dataset_name,
-                split=self.hf_dataset_split,
-            )
-
-        questions = []
-        for i, example in enumerate(dataset):
-            if i >= self.max_questions:
-                break
-            if self.hf_dataset_question_field in example:
-                questions.append(str(example[self.hf_dataset_question_field]))
-
-        if not questions:
-            raise ValueError(
-                f"No questions found in dataset {self.hf_dataset_name} "
-                f"with field {self.hf_dataset_question_field}"
-            )
-
         return questions
 
     def _split_questions(self, questions: list[str]) -> tuple[list[str], list[str]]:
