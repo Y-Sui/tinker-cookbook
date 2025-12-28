@@ -23,7 +23,6 @@ from tinker_cookbook.rl.types import (
     Trajectory,
 )
 from tinker_cookbook.tokenizer_utils import get_tokenizer
-from tinker_cookbook.utils import logtree
 
 from .prompts import (
     AGENT_SYSTEM_PROMPT,
@@ -249,55 +248,12 @@ class MultiAgentDebateEnv(Env):
     async def wait_for_turn(self) -> None:
         """Wait until it's this agent's turn."""
         if not self.coordinator.done:
-            if self.self_play:
-                await self.coordinator.wait_for_turn(self.agent_id)
-            else:
-                # Run opponent policies until it's our turn
-                await self.run_opponent_steps()
-
-    async def run_opponent_steps(self) -> None:
-        """Run opponent policies until it's this agent's turn."""
-        assert not self.self_play and self.opponent_policies is not None
-
-        while not self.coordinator.done and self.coordinator.current_agent_id != self.agent_id:
-            opponent_agent_id = self.coordinator.current_agent_id
-            # Map opponent agent ID to policy index (skip our own ID)
-            policy_idx = (
-                opponent_agent_id if opponent_agent_id < self.agent_id else opponent_agent_id - 1
-            )
-
-            opponent_policy = self.opponent_policies[policy_idx]
-            observation_str = await self.get_observation_string()
-
-            # Get opponent response
-            messages: list[Message] = [
-                {
-                    "role": "system",
-                    "content": AGENT_SYSTEM_PROMPT.format(agent_id=opponent_agent_id),
-                },
-                {"role": "user", "content": observation_str},
-            ]
-            opponent_response = await opponent_policy(messages)
-            opponent_content = ensure_text(opponent_response["content"])
-
-            # Submit to coordinator
-            try:
-                await self.coordinator.submit_response(
-                    opponent_agent_id,
-                    opponent_content,
-                    observation=observation_str,
-                )
-            except ValueError:
-                await self.coordinator.abort()
-                return
+            await self.coordinator.wait_for_turn(self.agent_id)
 
     async def get_observation_string(self) -> str:
         """Get the observation string for this agent."""
         history = await self.get_conversation_context()
         turn_idx = self.coordinator.state.current_turn
-        # cycle_idx = self.coordinator.state.get_current_cycle()
-        # max_cycles = self.coordinator.state.max_turns // self.coordinator.state.num_agents
-
         # intermission prompt for first turn
         if turn_idx == 0:
             return (
@@ -392,9 +348,6 @@ class MultiAgentEnvGroupBuilder(EnvGroupBuilder):
     # Optional fixed opponents for non-self-play evaluation. When provided, should have
     # length == num_agents, and we will pass per-env lists with the controlled agent removed.
     model_name: str | None = None
-    # For non-self-play, optionally train/eval only one fixed "seat" (agent position).
-    # If None, we create one env per seat (agent_id=0..num_agents-1), like a leave-one-out setup.
-    controlled_agent_id: int | None = None
 
     def _construct_fixed_opponent_policies(
         self, renderer: Renderer
@@ -417,73 +370,24 @@ class MultiAgentEnvGroupBuilder(EnvGroupBuilder):
         question = self.questions[self.question_index % len(self.questions)]
         max_turns = self.num_agents * self.max_rounds
 
-        if self.self_play:
-            # All agents share the same coordinator
-            coordinator = MultiAgentCoordinator(
-                question=question, num_agents=self.num_agents, max_turns=max_turns
+        # All agents share the same coordinator
+        coordinator = MultiAgentCoordinator(
+            question=question, num_agents=self.num_agents, max_turns=max_turns
+        )
+        return [
+            MultiAgentDebateEnv(
+                agent_id=i,
+                coordinator=coordinator,
+                renderer=self.renderer,
+                self_play=True,
+                opponent_policies=None,
+                history_turns=self.history_turns,
+                summarize_history=self.summarize_history,
+                summarize_model=self.summarize_model,
+                model_name=self.model_name,
             )
-            return [
-                MultiAgentDebateEnv(
-                    agent_id=i,
-                    coordinator=coordinator,
-                    renderer=self.renderer,
-                    self_play=True,
-                    opponent_policies=None,
-                    history_turns=self.history_turns,
-                    summarize_history=self.summarize_history,
-                    summarize_model=self.summarize_model,
-                    model_name=self.model_name,
-                )
-                for i in range(self.num_agents)
-            ]
-
-        # Non-self-play
-        opponent_policies = self._construct_fixed_opponent_policies(self.renderer)
-
-        # Fixed seat: only return one env (simpler metrics; evaluates only agent 0 by default).
-        if self.controlled_agent_id is not None:
-            if not 0 <= self.controlled_agent_id < self.num_agents:
-                raise ValueError(
-                    f"controlled_agent_id must be in [0, {self.num_agents}). "
-                    f"Got {self.controlled_agent_id}."
-                )
-            coordinator = MultiAgentCoordinator(
-                question=question, num_agents=self.num_agents, max_turns=max_turns
-            )
-            return [
-                MultiAgentDebateEnv(
-                    agent_id=self.controlled_agent_id,
-                    coordinator=coordinator,
-                    renderer=self.renderer,
-                    self_play=False,
-                    opponent_policies=opponent_policies,
-                    history_turns=self.history_turns,
-                    summarize_history=self.summarize_history,
-                    summarize_model=self.summarize_model,
-                    model_name=self.model_name,
-                )
-            ]
-
-        # Leave-one-out seats: one env per controlled seat position.
-        envs: list[MultiAgentDebateEnv] = []
-        for i in range(self.num_agents):
-            coordinator = MultiAgentCoordinator(
-                question=question, num_agents=self.num_agents, max_turns=max_turns
-            )
-            envs.append(
-                MultiAgentDebateEnv(
-                    agent_id=i,  # controlled agent at position i
-                    coordinator=coordinator,
-                    renderer=self.renderer,
-                    self_play=False,  # use opponent policies
-                    opponent_policies=opponent_policies,  # N-1 base model policies
-                    history_turns=self.history_turns,
-                    summarize_history=self.summarize_history,
-                    summarize_model=self.summarize_model,
-                    model_name=self.model_name,
-                )
-            )
-        return envs
+            for i in range(self.num_agents)
+        ]
 
     async def compute_group_rewards(
         self, trajectory_group: list[Trajectory], env_group: Sequence[Env]
@@ -531,45 +435,6 @@ class MultiAgentEnvGroupBuilder(EnvGroupBuilder):
                 for agent_id, reward in enumerate(rewards_G)
             ]
 
-        # Non-self-play: each env has its own coordinator (controlled agent vs fixed opponents).
-        # Compute per-env rewards from that env's full transcript, and return the controlled agent's reward.
-        rewards_and_metrics: list[tuple[float, Metrics]] = []
-        for env in env_group:
-            assert isinstance(env, MultiAgentDebateEnv)
-            coordinator = env.coordinator
-            if self.log_full_transcript:
-                with logtree.scope_header(f"Non-self-play Transcript (seat={env.agent_id})"):
-                    _log_debate_transcript(coordinator)
-            if self.reward_mode == "win_rate":
-                rewards_G, summary_metrics = compute_pairwise_win_rates(
-                    coordinator.state.agent_responses, num_agents=self.num_agents
-                )
-                reward = rewards_G[env.agent_id]
-            elif self.reward_mode == "win_minus_loss":
-                rewards_G, summary_metrics = compute_pairwise_win_minus_loss(
-                    coordinator.state.agent_responses, num_agents=self.num_agents
-                )
-                reward = rewards_G[env.agent_id]
-            else:
-                raise ValueError(f"Invalid reward_mode={self.reward_mode!r}")
-            rewards_and_metrics.append(
-                (
-                    reward,
-                    {
-                        "agent_id": env.agent_id,
-                        "pairwise_reward_is_win_rate": 1.0
-                        if self.reward_mode == "win_rate"
-                        else 0.0,
-                        "pairwise_reward_is_win_minus_loss": 1.0
-                        if self.reward_mode == "win_minus_loss"
-                        else 0.0,
-                        "pairwise_reward": reward,
-                        **summary_metrics,
-                    },
-                )
-            )
-        return rewards_and_metrics
-
 
 class MultiAgentDebateDataset(RLDataset):
     """Dataset for multi-agent debate environments."""
@@ -589,7 +454,6 @@ class MultiAgentDebateDataset(RLDataset):
         max_rounds: int,
         num_datapoints: int,
         model_name: str,
-        non_self_play_controlled_agent_id: int | None = 0,
     ):
         self.batch_size = batch_size
         self.questions = questions
@@ -604,7 +468,6 @@ class MultiAgentDebateDataset(RLDataset):
         self.max_rounds = max_rounds
         self.num_datapoints = num_datapoints
         self.model_name = model_name
-        self.non_self_play_controlled_agent_id = non_self_play_controlled_agent_id
 
     def get_batch(self, index: int) -> Sequence[EnvGroupBuilder]:
         """Get a batch of environment group builders."""
@@ -625,9 +488,6 @@ class MultiAgentDebateDataset(RLDataset):
                 log_full_transcript=self.log_full_transcript,
                 max_rounds=self.max_rounds,
                 model_name=self.model_name,
-                controlled_agent_id=(
-                    self.non_self_play_controlled_agent_id if not self.self_play else None
-                ),
             )
             for question_index in range(batch_start, batch_end)
         ]
@@ -725,7 +585,6 @@ class MultiAgentDebateDatasetBuilder(RLDatasetBuilder):
             max_rounds=self.max_rounds,
             num_datapoints=self.num_train_datapoints,
             model_name=self.model_name,
-            non_self_play_controlled_agent_id=self.non_self_play_controlled_agent_id,
         )
 
         # Test dataset (optional). If num_test_datapoints is 0, disable test set entirely.
@@ -747,7 +606,6 @@ class MultiAgentDebateDatasetBuilder(RLDatasetBuilder):
                 max_rounds=self.max_rounds,
                 num_datapoints=self.num_test_datapoints,
                 model_name=self.model_name,
-                non_self_play_controlled_agent_id=self.non_self_play_controlled_agent_id,
             )
 
         return train_dataset, test_dataset
