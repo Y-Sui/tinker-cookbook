@@ -34,7 +34,6 @@ class CLIConfig:
     max_tokens: int = 8196
     eval_every: int = 10
     save_every: int = 20
-    reward_mode: str = "win_rate"  # "win_rate" | "win_minus_loss"
     history_rounds: int = 2  # -1 = entire history
     summarize_history: bool = False
     summarize_model: str | None = "Qwen/Qwen3-4B-Instruct-2507"
@@ -52,6 +51,7 @@ class CLIConfig:
     verifiable_problem_field: str = "problem"
     verifiable_answer_field: str = "answer"
     verifiable_grader: Literal["sympy", "math_verify"] = "sympy"
+    verifiable_eval_mode: Literal["direct", "debate", "both"] = "debate"
 
     max_questions: int = 1000
     wandb_project: str | None = None
@@ -105,6 +105,7 @@ def build_config(cli_config: CLIConfig) -> train.Config:
             answer_field=cli_config.verifiable_answer_field,
             test_question_frac=cli_config.test_question_frac,
             grader=cli_config.verifiable_grader,
+            eval_mode=cli_config.verifiable_eval_mode,
         )
 
     elif cli_config.env == "non-verifiable":
@@ -114,7 +115,6 @@ def build_config(cli_config: CLIConfig) -> train.Config:
             num_test_datapoints=cli_config.num_test_datapoints,
             num_agents=cli_config.num_agents,
             max_rounds=cli_config.max_rounds,
-            reward_mode=cli_config.reward_mode,
             history_rounds=cli_config.history_rounds,
             summarize_history=cli_config.summarize_history,
             summarize_model=cli_config.summarize_model,

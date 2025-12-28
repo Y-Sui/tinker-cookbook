@@ -29,13 +29,10 @@ from .prompts import (
     ParsedResponse,
     parse_agent_response,
 )
-from .reward import (
-    compute_pairwise_win_minus_loss,
-    compute_pairwise_win_rates,
-)
 from .utils import (
     STOP_CONDITION,
     _get_debate_stop_condition,
+    _get_step_idx_before_turn,
     _get_summarizer_stop_condition,
     _log_debate_transcript,
 )
@@ -137,7 +134,6 @@ class MultiAgentDebateEnv(Env):
     coordinator: MultiAgentCoordinator
     renderer: Renderer
     self_play: bool = True
-    opponent_policies: list[TinkerMessageCompleter] | None = None
     history_turns: int = 2
     summarize_history: bool = False
     summarize_model: str | None = "Qwen/Qwen3-4B-Instruct-2507"
@@ -145,13 +141,7 @@ class MultiAgentDebateEnv(Env):
     base_url: str | None = None
 
     def __post_init__(self):
-        if self.self_play:
-            assert self.opponent_policies is None, "self_play=True requires opponent_policies=None"
-        else:
-            assert (
-                self.opponent_policies is not None
-                and len(self.opponent_policies) == self.coordinator.state.num_agents - 1
-            ), "Need N-1 opponent policies for non-self-play"
+        assert self.self_play, "Only self-play mode is supported"
 
         # Initialize summarizer components once if summarization is enabled
         self._summarizer_policy: TinkerMessageCompleter | None = None
@@ -340,30 +330,74 @@ class MultiAgentEnvGroupBuilder(EnvGroupBuilder):
     num_agents: int
     max_rounds: int
     self_play: bool
-    reward_mode: str = "win_rate"  # "win_rate" | "win_minus_loss"
     history_turns: int = 2
     summarize_history: bool = False
     summarize_model: str | None = "Qwen/Qwen3-4B-Instruct-2507"
     log_full_transcript: bool = False
-    # Optional fixed opponents for non-self-play evaluation. When provided, should have
-    # length == num_agents, and we will pass per-env lists with the controlled agent removed.
     model_name: str | None = None
 
-    def _construct_fixed_opponent_policies(
-        self, renderer: Renderer
-    ) -> list[TinkerMessageCompleter]:
-        """Create fixed opponent policies for evaluation (using a base model)."""
-        service_client = tinker.ServiceClient()
-        sampling_client = service_client.create_sampling_client(base_model=self.model_name)
-        # Create one policy and share it (they're stateless)
-        policy = TinkerMessageCompleter(
-            sampling_client=sampling_client,
-            renderer=renderer,
-            max_tokens=2048,
-            stop_condition=_get_debate_stop_condition(renderer),
-        )
-        # Return N-1 policies for opponents (controlled agent is excluded)
-        return [policy for _ in range(self.num_agents - 1)]
+    def _populate_stepwise_rewards(
+        self,
+        trajectory_group: list[Trajectory],
+        env_group: Sequence[Env],
+    ) -> dict[str, float]:
+        """
+        Modify trajectories in-place to assign step-wise rewards based on comparisons.
+
+        Returns summary metrics.
+        """
+        env0 = env_group[0]
+        assert isinstance(env0, MultiAgentDebateEnv)
+        coordinator = env0.coordinator
+
+        # Process each response in order
+        for turn_idx, response in enumerate(coordinator.state.agent_responses):
+            author_id = response.author_id
+
+            # Process each comparison from this response
+            for agent_a, op, agent_b in response.comparisons:
+                # Leave-one-out: skip if author is involved
+                if author_id == agent_a or author_id == agent_b:
+                    continue
+
+                # Validate agent IDs
+                if not (0 <= agent_a < self.num_agents and 0 <= agent_b < self.num_agents):
+                    continue
+                if agent_a == agent_b:
+                    continue
+                if op not in {">", "="}:
+                    continue
+
+                # Find step indices for agent_a and agent_b
+                # (most recent step before this turn)
+                agent_a_step_idx = _get_step_idx_before_turn(agent_a, turn_idx, self.num_agents)
+                agent_b_step_idx = _get_step_idx_before_turn(agent_b, turn_idx, self.num_agents)
+
+                # Skip if either agent hasn't acted yet
+                if agent_a_step_idx < 0 or agent_b_step_idx < 0:
+                    continue
+
+                # Assign rewards (mutate trajectories in-place)
+                if op == ">":
+                    trajectory_group[agent_a].transitions[agent_a_step_idx].reward += 1.0
+                    trajectory_group[agent_b].transitions[agent_b_step_idx].reward -= 1.0
+                elif op == "=":
+                    # Equal comparison: no reward change (or could use ±0.5)
+                    pass
+
+        # Compute summary metrics
+        total_comparisons_used = 0
+        total_rewards_assigned = 0
+        for trajectory in trajectory_group:
+            for transition in trajectory.transitions:
+                if transition.reward != 0.0:
+                    total_rewards_assigned += 1
+                    total_comparisons_used += abs(transition.reward)
+
+        return {
+            "stepwise_comparisons_used": total_comparisons_used,
+            "stepwise_rewards_assigned": total_rewards_assigned,
+        }
 
     async def make_envs(self) -> Sequence[Env]:
         """Create a group of environments for a multi-agent debate."""
@@ -380,7 +414,6 @@ class MultiAgentEnvGroupBuilder(EnvGroupBuilder):
                 coordinator=coordinator,
                 renderer=self.renderer,
                 self_play=True,
-                opponent_policies=None,
                 history_turns=self.history_turns,
                 summarize_history=self.summarize_history,
                 summarize_model=self.summarize_model,
@@ -405,34 +438,18 @@ class MultiAgentEnvGroupBuilder(EnvGroupBuilder):
                 # This is the easiest way to inspect the entire conversation across all turns/agents.
                 _log_debate_transcript(coordinator)
 
-            # Leave-one-out rewards: agent i's reward excludes comparisons authored by i.
-            if self.reward_mode == "win_rate":
-                rewards_G, summary_metrics = compute_pairwise_win_rates(
-                    coordinator.state.agent_responses, num_agents=self.num_agents
-                )
-            elif self.reward_mode == "win_minus_loss":
-                rewards_G, summary_metrics = compute_pairwise_win_minus_loss(
-                    coordinator.state.agent_responses, num_agents=self.num_agents
-                )
-            else:
-                raise ValueError(f"Invalid reward_mode={self.reward_mode!r}")
+            # Populate step-wise rewards in trajectories
+            stepwise_metrics = self._populate_stepwise_rewards(trajectory_group, env_group)
 
             return [
                 (
-                    reward,
+                    0.0,  # No final reward (all rewards are in steps)
                     {
                         "agent_id": agent_id,
-                        "pairwise_reward_is_win_rate": 1.0
-                        if self.reward_mode == "win_rate"
-                        else 0.0,
-                        "pairwise_reward_is_win_minus_loss": 1.0
-                        if self.reward_mode == "win_minus_loss"
-                        else 0.0,
-                        "pairwise_reward": reward,
-                        **summary_metrics,
+                        **stepwise_metrics,
                     },
                 )
-                for agent_id, reward in enumerate(rewards_G)
+                for agent_id in range(self.num_agents)
             ]
 
 
@@ -446,7 +463,6 @@ class MultiAgentDebateDataset(RLDataset):
         num_agents: int,
         renderer: Renderer,
         self_play: bool,
-        reward_mode: str,
         history_turns: int,
         summarize_history: bool,
         summarize_model: str | None,
@@ -460,7 +476,6 @@ class MultiAgentDebateDataset(RLDataset):
         self.num_agents = num_agents
         self.renderer = renderer
         self.self_play = self_play
-        self.reward_mode = reward_mode
         self.history_turns = history_turns
         self.summarize_history = summarize_history
         self.summarize_model = summarize_model
@@ -481,7 +496,6 @@ class MultiAgentDebateDataset(RLDataset):
                 renderer=self.renderer,
                 num_agents=self.num_agents,
                 self_play=self.self_play,
-                reward_mode=self.reward_mode,
                 history_turns=self.history_turns,
                 summarize_history=self.summarize_history,
                 summarize_model=self.summarize_model,
@@ -506,7 +520,6 @@ class MultiAgentDebateDatasetBuilder(RLDatasetBuilder):
     num_test_datapoints: int
     num_agents: int = 3
     max_rounds: int = 3
-    reward_mode: str = "win_rate"  # "win_rate" | "win_minus_loss"
     history_rounds: int = 2  # number of turns of history to include
     summarize_history: bool = False
     summarize_model: str | None = None
@@ -577,7 +590,6 @@ class MultiAgentDebateDatasetBuilder(RLDatasetBuilder):
             num_agents=self.num_agents,
             renderer=renderer,
             self_play=True,
-            reward_mode=self.reward_mode,
             history_turns=self.history_rounds,
             summarize_history=self.summarize_history,
             summarize_model=self.summarize_model,
@@ -587,7 +599,7 @@ class MultiAgentDebateDatasetBuilder(RLDatasetBuilder):
             model_name=self.model_name,
         )
 
-        # Test dataset (optional). If num_test_datapoints is 0, disable test set entirely.
+        # Test dataset (optional, also uses self-play). If num_test_datapoints is 0, disable test set entirely.
         test_dataset: MultiAgentDebateDataset | None
         if self.num_test_datapoints <= 0 or not test_questions:
             test_dataset = None
@@ -597,8 +609,7 @@ class MultiAgentDebateDatasetBuilder(RLDatasetBuilder):
                 questions=test_questions,
                 num_agents=self.num_agents,
                 renderer=renderer,
-                self_play=False,
-                reward_mode=self.reward_mode,
+                self_play=True,
                 history_turns=self.history_rounds,
                 summarize_history=self.summarize_history,
                 summarize_model=self.summarize_model,

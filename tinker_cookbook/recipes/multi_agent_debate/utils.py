@@ -13,7 +13,40 @@ from .prompts import AGENT_SYSTEM_PROMPT
 STOP_CONDITION = ["</comparison>"]
 
 
-def _log_debate_transcript(coordinator: "MultiAgentCoordinator") -> None:
+def get_step_idx_before_turn(agent_id: int, turn_idx: int, num_agents: int) -> int:
+    """
+    Find the step index for agent_id's most recent turn before turn_idx.
+
+    Returns -1 if the agent hasn't acted yet.
+
+    Example: agent_id=0, turn_idx=5, num_agents=3
+    - Agent 0's turns: 0, 3, 6, ...
+    - Most recent before 5 is turn 3
+    - Step index = 3 // 3 = 1
+    """
+    # Find agent's most recent turn before turn_idx
+    if agent_id >= turn_idx:
+        return -1  # Agent hasn't acted yet
+
+    # Count how many complete rounds have passed
+    current_round = turn_idx // num_agents
+
+    # If agent_id < (turn_idx % num_agents), they've acted in current round
+    # Otherwise, their last action was in the previous round
+    if agent_id < (turn_idx % num_agents):
+        most_recent_turn = current_round * num_agents + agent_id
+    else:
+        most_recent_turn = (current_round - 1) * num_agents + agent_id
+
+    if most_recent_turn < 0:
+        return -1
+
+    # Convert turn index to step index for this agent
+    step_idx = most_recent_turn // num_agents
+    return step_idx
+
+
+def log_debate_transcript(coordinator: "MultiAgentCoordinator") -> None:
     with logtree.scope_header("Debate Transcript"):
         logtree.log_text(f"Question: {coordinator.state.question}")
         turns = coordinator.state.agent_responses
@@ -41,7 +74,7 @@ def _log_debate_transcript(coordinator: "MultiAgentCoordinator") -> None:
                         logtree.log_text(response.raw_response)
 
 
-def _get_debate_stop_condition(renderer: Renderer) -> StopCondition:
+def get_debate_stop_condition(renderer: Renderer) -> StopCondition:
     """
     Pick stop sequences that are compatible with the active renderer.
 
@@ -57,6 +90,6 @@ def _get_debate_stop_condition(renderer: Renderer) -> StopCondition:
     return list(dict.fromkeys([*renderer_stop, *STOP_CONDITION]))
 
 
-def _get_summarizer_stop_condition(renderer: Renderer) -> StopCondition:
+def get_summarizer_stop_condition(renderer: Renderer) -> StopCondition:
     renderer_stop = renderer.get_stop_sequences()
     return renderer_stop or []

@@ -40,56 +40,18 @@ from tinker_cookbook.rl.types import (
     Trajectory,
 )
 from tinker_cookbook.tokenizer_utils import get_tokenizer
-from tinker_cookbook.utils import logtree
 
-from .prompts import ParsedResponse
-from .verifiable_env import MultiAgentCoordinator
-
-VERIFIABLE_AGENT_SYSTEM_PROMPT = """You are Agent {agent_id} participating in a multi-agent self-play debate to solve a verifiable math problem.
-
-Your objectives:
-- Propose or refine a correct solution to the problem.
-- In <solution>, include a final answer written in \\boxed{{...}} format.
-- Evaluate other agents’ recent contributions (solution + critique quality), and compare other agents’ outputs.
-
-OUTPUT FORMAT (use exact XML tags, in this order):
-
-<solution>
-Your detailed solution. You MUST include a final answer in \\boxed{{...}} format.
-</solution>
-
-<evaluation>
-Evaluate other agents’ recent work. If there are no prior completions visible, write "N/A".
-</evaluation>
-
-<comparison>
-Compare only OTHER agents visible in the history (never include yourself). If fewer than two other completions are visible, write "N/A".
-</comparison>
-
-Key reminders:
-- Use EXACTLY these three XML tags, in strict order.
-- Do NOT compare your own work in <comparison>.
-"""
-
+from .env import MultiAgentCoordinator
+from .prompts import VERIFIABLE_AGENT_SYSTEM_PROMPT, ParsedResponse
+from .utils import (
+    STOP_CONDITION,
+    get_debate_stop_condition,
+    get_step_idx_before_turn,
+    get_summarizer_stop_condition,
+    log_debate_transcript,
+)
 
 QUESTION_SUFFIX = " Write your answer in \\boxed{} format."
-
-# Stop when we see the closing tag of the last required field.
-_STOP_CONDITION_TEXT = ["</comparison>"]
-
-
-def _get_debate_stop_condition(renderer: Renderer) -> StopCondition:
-    renderer_stop = renderer.get_stop_sequences()
-    if not renderer_stop:
-        return _STOP_CONDITION_TEXT
-    if isinstance(renderer_stop[0], int):
-        return renderer_stop
-    return list(dict.fromkeys([*renderer_stop, *_STOP_CONDITION_TEXT]))
-
-
-def _get_summarizer_stop_condition(renderer: Renderer) -> StopCondition:
-    renderer_stop = renderer.get_stop_sequences()
-    return renderer_stop or []
 
 
 def _append_question_suffix(problem: str) -> str:
@@ -129,6 +91,38 @@ class VerifiableMathProblem:
 
 
 @dataclass
+class DirectMathEvaluationEnv(Env):
+    """Simple single-turn environment for direct math problem evaluation."""
+
+    problem: VerifiableMathProblem
+    renderer: Renderer
+
+    async def initial_observation(self) -> tuple[Observation, StopCondition]:
+        question = _append_question_suffix(self.problem.problem)
+        messages = [
+            {
+                "role": "system",
+                "content": "Solve the following math problem. Write your final answer in \\boxed{} format.",
+            },
+            {"role": "user", "content": question},
+        ]
+        return (
+            self.renderer.build_generation_prompt(messages),
+            get_debate_stop_condition(self.renderer),
+        )
+
+    async def step(self, action: Action) -> StepResult:
+        # Episode ends immediately after first response
+        return StepResult(
+            reward=0.0,  # Reward computed in compute_group_rewards
+            episode_done=True,
+            next_observation=types.ModelInput.empty(),
+            next_stop_condition=STOP_CONDITION,
+            metrics={},
+        )
+
+
+@dataclass
 class VerifiableMultiAgentDebateEnv(Env):
     """Environment for one agent in a verifiable multi-agent debate."""
 
@@ -136,25 +130,17 @@ class VerifiableMultiAgentDebateEnv(Env):
     coordinator: MultiAgentCoordinator
     renderer: Renderer
     self_play: bool = True
-    opponent_policies: list[TinkerMessageCompleter] | None = None
     history_turns: int = 2
     summarize_history: bool = False
     summarize_model: str | None = "Qwen/Qwen3-4B-Instruct-2507"
     model_name: str | None = None
 
     def __post_init__(self) -> None:
-        if self.self_play:
-            if self.opponent_policies is not None:
-                raise ValueError("self_play=True requires opponent_policies=None")
-        else:
-            if self.opponent_policies is None:
-                raise ValueError("Need opponent_policies for non-self-play")
-            if len(self.opponent_policies) != self.coordinator.state.num_agents - 1:
-                raise ValueError("Need N-1 opponent policies for non-self-play")
+        assert self.self_play, "Only self-play mode is supported"
 
     @property
     def stop_condition(self) -> StopCondition:
-        return _get_debate_stop_condition(self.renderer)
+        return get_debate_stop_condition(self.renderer)
 
     def get_system_prompt(self) -> str:
         return VERIFIABLE_AGENT_SYSTEM_PROMPT.format(agent_id=self.agent_id)
@@ -184,7 +170,7 @@ class VerifiableMultiAgentDebateEnv(Env):
             sampling_client=sampling_client,
             renderer=self.renderer,
             max_tokens=892,
-            stop_condition=_get_summarizer_stop_condition(self.renderer),
+            stop_condition=get_summarizer_stop_condition(self.renderer),
         )
         messages: list[Message] = [
             {
@@ -244,41 +230,7 @@ class VerifiableMultiAgentDebateEnv(Env):
 
     async def wait_for_turn(self) -> None:
         if not self.coordinator.done:
-            if self.self_play:
-                await self.coordinator.wait_for_turn(self.agent_id)
-            else:
-                await self.run_opponent_steps()
-
-    async def run_opponent_steps(self) -> None:
-        assert not self.self_play and self.opponent_policies is not None
-
-        while not self.coordinator.done and self.coordinator.current_agent_id != self.agent_id:
-            opponent_agent_id = self.coordinator.current_agent_id
-            policy_idx = (
-                opponent_agent_id if opponent_agent_id < self.agent_id else opponent_agent_id - 1
-            )
-            opponent_policy = self.opponent_policies[policy_idx]
-            observation_str = await self.get_observation_string()
-
-            messages: list[Message] = [
-                {
-                    "role": "system",
-                    "content": VERIFIABLE_AGENT_SYSTEM_PROMPT.format(agent_id=opponent_agent_id),
-                },
-                {"role": "user", "content": observation_str},
-            ]
-            opponent_response = await opponent_policy(messages)
-            opponent_content = ensure_text(opponent_response["content"])
-
-            try:
-                await self.coordinator.submit_response(
-                    opponent_agent_id,
-                    opponent_content,
-                    observation=observation_str,
-                )
-            except ValueError:
-                await self.coordinator.abort()
-                return
+            await self.coordinator.wait_for_turn(self.agent_id)
 
     async def get_observation_string(self) -> str:
         history = await self.get_conversation_context()
@@ -350,7 +302,7 @@ class VerifiableMultiAgentDebateEnv(Env):
             reward=0.0,
             episode_done=True,
             next_observation=types.ModelInput.empty(),
-            next_stop_condition=_STOP_CONDITION_TEXT,
+            next_stop_condition=STOP_CONDITION,
             metrics={},
         )
 
@@ -383,59 +335,108 @@ class VerifiableMultiAgentEnvGroupBuilder(EnvGroupBuilder):
     summarize_history: bool = False
     summarize_model: str | None = "Qwen/Qwen3-4B-Instruct-2507"
     log_full_transcript: bool = False
-    opponent_policies_all: list[TinkerMessageCompleter] | None = None
     model_name: str | None = None
     grader: Literal["sympy", "math_verify"] = "sympy"
+    format_coef: float = 0.1
+    grade_timeout: float = 1.0
+    eval_mode: Literal["direct", "debate", "both"] = "debate"
+    is_training: bool = True  # training or evaluation mode
 
     async def make_envs(self) -> Sequence[Env]:
         problem = self.problems[self.problem_index % len(self.problems)]
+
+        # Direct evaluation mode: single-turn problem solving
+        if self.eval_mode == "direct" and not self.is_training:
+            return [
+                DirectMathEvaluationEnv(
+                    problem=problem,
+                    renderer=self.renderer,
+                )
+            ]
+
+        # Debate mode (training or evaluation): multi-turn self-play debate
         question = _append_question_suffix(problem.problem)
         max_turns = self.num_agents * self.max_rounds
 
-        if self.self_play:
-            coordinator = MultiAgentCoordinator(
-                question=question, num_agents=self.num_agents, max_turns=max_turns
+        coordinator = MultiAgentCoordinator(
+            question=question, num_agents=self.num_agents, max_turns=max_turns
+        )
+        return [
+            VerifiableMultiAgentDebateEnv(
+                agent_id=i,
+                coordinator=coordinator,
+                renderer=self.renderer,
+                self_play=True,
+                history_turns=self.history_turns,
+                summarize_history=self.summarize_history,
+                summarize_model=self.summarize_model,
+                model_name=self.model_name,
             )
-            return [
-                VerifiableMultiAgentDebateEnv(
-                    agent_id=i,
-                    coordinator=coordinator,
-                    renderer=self.renderer,
-                    self_play=True,
-                    opponent_policies=None,
-                    history_turns=self.history_turns,
-                    summarize_history=self.summarize_history,
-                    summarize_model=self.summarize_model,
-                    model_name=self.model_name,
-                )
-                for i in range(self.num_agents)
-            ]
+            for i in range(self.num_agents)
+        ]
 
-        if self.opponent_policies_all is None:
-            raise ValueError("opponent_policies_all is required for non-self-play evaluation")
+    def _populate_stepwise_rewards(
+        self,
+        trajectory_group: list[Trajectory],
+        env_group: Sequence[Env],
+    ) -> dict[str, float]:
+        """
+        Modify trajectories in-place to assign step-wise rewards based on comparisons.
 
-        envs: list[Env] = []
-        for i in range(self.num_agents):
-            coordinator = MultiAgentCoordinator(
-                question=question, num_agents=self.num_agents, max_turns=max_turns
-            )
-            opponent_policies_for_i = [
-                p for j, p in enumerate(self.opponent_policies_all) if j != i
-            ]
-            envs.append(
-                VerifiableMultiAgentDebateEnv(
-                    agent_id=i,
-                    coordinator=coordinator,
-                    renderer=self.renderer,
-                    self_play=False,
-                    opponent_policies=opponent_policies_for_i,
-                    history_turns=self.history_turns,
-                    summarize_history=self.summarize_history,
-                    summarize_model=self.summarize_model,
-                    model_name=self.model_name,
-                )
-            )
-        return envs
+        Returns summary metrics.
+        """
+        env0 = env_group[0]
+        assert isinstance(env0, VerifiableMultiAgentDebateEnv)
+        coordinator = env0.coordinator
+
+        # Process each response in order
+        for turn_idx, response in enumerate(coordinator.state.agent_responses):
+            author_id = response.author_id
+
+            # Process each comparison from this response
+            for agent_a, op, agent_b in response.comparisons:
+                # Leave-one-out: skip if author is involved
+                if author_id == agent_a or author_id == agent_b:
+                    continue
+
+                # Validate agent IDs
+                if not (0 <= agent_a < self.num_agents and 0 <= agent_b < self.num_agents):
+                    continue
+                if agent_a == agent_b:
+                    continue
+                if op not in {">", "="}:
+                    continue
+
+                # Find step indices for agent_a and agent_b
+                # (most recent step before this turn)
+                agent_a_step_idx = get_step_idx_before_turn(agent_a, turn_idx, self.num_agents)
+                agent_b_step_idx = get_step_idx_before_turn(agent_b, turn_idx, self.num_agents)
+
+                # Skip if either agent hasn't acted yet
+                if agent_a_step_idx < 0 or agent_b_step_idx < 0:
+                    continue
+
+                # Assign rewards (mutate trajectories in-place)
+                if op == ">":
+                    trajectory_group[agent_a].transitions[agent_a_step_idx].reward += 1.0
+                    trajectory_group[agent_b].transitions[agent_b_step_idx].reward -= 1.0
+                elif op == "=":
+                    # Equal comparison: no reward change (or could use ±0.5)
+                    pass
+
+        # Compute summary metrics
+        total_comparisons_used = 0
+        total_rewards_assigned = 0
+        for trajectory in trajectory_group:
+            for transition in trajectory.transitions:
+                if transition.reward != 0.0:
+                    total_rewards_assigned += 1
+                    total_comparisons_used += abs(transition.reward)
+
+        return {
+            "stepwise_comparisons_used": total_comparisons_used,
+            "stepwise_rewards_assigned": total_rewards_assigned,
+        }
 
     async def compute_group_rewards(
         self, trajectory_group: list[Trajectory], env_group: Sequence[Env]
@@ -445,121 +446,101 @@ class VerifiableMultiAgentEnvGroupBuilder(EnvGroupBuilder):
         problem = self.problems[self.problem_index % len(self.problems)]
         ground_truth = problem.answer
 
-        def compute_one_agent_reward(
-            *,
-            coordinator: MultiAgentCoordinator,
-            agent_id: int,
-        ) -> tuple[float, Metrics]:
-            latest = _latest_response_by_author(
-                coordinator.state.agent_responses, author_id=agent_id
-            )
-            if latest is None:
-                reward = -self.format_coef
-                return (
-                    reward,
-                    {
-                        "agent_id": float(agent_id),
-                        "format": 0.0,
-                        "correct": 0.0,
-                        "verifiable_reward": reward,
-                        "missing_response": 1.0,
-                    },
-                )
-
-            has_box, boxed = _extract_boxed_from_solution(latest.solution)
-            correct = False
-            if boxed is not None:
-                correct = safe_grade(
-                    boxed,
-                    ground_truth,
-                    grader=self.grader,
-                )
-            correct_f = 1.0 if correct else 0.0
-            format_f = 1.0 if has_box else 0.0
-            reward = self.format_coef * (format_f - 1.0) + correct_f
-            return (
-                reward,
-                {
-                    "agent_id": float(agent_id),
-                    "format": format_f,
-                    "correct": correct_f,
-                    "verifiable_reward": reward,
-                    "missing_response": 0.0,
-                },
-            )
-
-        if self.self_play:
+        # Training mode: Use pairwise step-wise rewards
+        if self.is_training:
             env0 = env_group[0]
             assert isinstance(env0, VerifiableMultiAgentDebateEnv)
             coordinator = env0.coordinator
 
             if self.log_full_transcript:
-                with logtree.scope_header("Debate Transcript"):
-                    logtree.log_text(f"Question: {coordinator.state.question}")
-                    turns = coordinator.state.agent_responses
-                    if not turns:
-                        logtree.log_text("(No responses captured)")
-                    for turn_idx, response in enumerate(turns, start=1):
-                        with logtree.scope_header(f"Turn {turn_idx}"):
-                            with logtree.scope_header(f"Agent {response.author_id}"):
-                                if response.observation:
-                                    with logtree.scope_details("Observation (context)"):
-                                        logtree.log_text(response.observation)
-                                with logtree.scope_details("Solution"):
-                                    logtree.log_text(response.solution)
-                                with logtree.scope_details("Evaluation"):
-                                    logtree.log_text(response.evaluation)
-                                if response.comparison_text:
-                                    with logtree.scope_details("Comparison"):
-                                        logtree.log_text(response.comparison_text)
-                                with logtree.scope_details("Raw response"):
-                                    logtree.log_text(response.raw_response)
+                log_debate_transcript(coordinator)
 
-            rewards_and_metrics: list[tuple[float, Metrics]] = []
-            for agent_id in range(self.num_agents):
-                reward, metrics = compute_one_agent_reward(
-                    coordinator=coordinator, agent_id=agent_id
+            # Populate step-wise rewards in trajectories
+            stepwise_metrics = self._populate_stepwise_rewards(trajectory_group, env_group)
+
+            return [
+                (
+                    0.0,  # No final reward (all rewards are in steps)
+                    {
+                        "agent_id": agent_id,
+                        **stepwise_metrics,
+                    },
                 )
-                with logtree.scope_header(f"Verifiable Reward (Agent {agent_id})"):
-                    logtree.log_text(f"Ground truth: {ground_truth}")
-                    logtree.log_text(
-                        f"Format ok: {metrics['format']}, Correct: {metrics['correct']}, Reward: {reward}"
+                for agent_id in range(self.num_agents)
+            ]
+
+        # Evaluation modes: no rewards, only metrics
+        # Helper function for correctness metrics (no rewards)
+        def compute_correctness_metrics(solution_text: str, agent_id: int) -> Metrics:
+            has_box, boxed = _extract_boxed_from_solution(solution_text)
+            correct = False
+            if boxed is not None:
+                correct = safe_grade(
+                    boxed, ground_truth, grader=self.grader, timeout=self.grade_timeout
+                )
+
+            return {
+                "agent_id": float(agent_id),
+                "format": 1.0 if has_box else 0.0,
+                "correct": 1.0 if correct else 0.0,
+                "eval_mode": self.eval_mode,
+            }
+
+        # Evaluation modes: no rewards, only metrics
+        # Direct evaluation: single-turn correctness metrics
+        if self.eval_mode == "direct" and not self.is_training:
+            trajectory = trajectory_group[0]
+            if not trajectory.transitions:
+                return [
+                    (
+                        0.0,
+                        {
+                            "agent_id": 0.0,
+                            "format": 0.0,
+                            "correct": 0.0,
+                            "missing_response": 1.0,
+                            "eval_mode": self.eval_mode,
+                        },
                     )
-                rewards_and_metrics.append((reward, metrics))
-            return rewards_and_metrics
+                ]
 
-        rewards_and_metrics: list[tuple[float, Metrics]] = []
-        for env in env_group:
-            assert isinstance(env, VerifiableMultiAgentDebateEnv)
-            coordinator = env.coordinator
+            action_tokens = trajectory.transitions[0].ac.tokens
+            response_text = self.renderer.parse_response(action_tokens)[0]["content"]
+
+            metrics = compute_correctness_metrics(response_text, agent_id=0)
+            return [(0.0, metrics)]  # No reward, only metrics
+
+        # Debate evaluation: multi-turn self-play, check all agents' final answers
+        if self.eval_mode == "debate" and not self.is_training:
+            env0 = env_group[0]
+            assert isinstance(env0, VerifiableMultiAgentDebateEnv)
+            coordinator = env0.coordinator
+
             if self.log_full_transcript:
-                with logtree.scope_header(f"Debate Transcript (controlled Agent {env.agent_id})"):
-                    logtree.log_text(f"Question: {coordinator.state.question}")
-                    turns = coordinator.state.agent_responses
-                    if not turns:
-                        logtree.log_text("(No responses captured)")
-                    for turn_idx, response in enumerate(turns, start=1):
-                        with logtree.scope_header(f"Turn {turn_idx}"):
-                            with logtree.scope_header(f"Agent {response.author_id}"):
-                                if response.observation:
-                                    with logtree.scope_details("Observation (context)"):
-                                        logtree.log_text(response.observation)
-                                with logtree.scope_details("Solution"):
-                                    logtree.log_text(response.solution)
-                                with logtree.scope_details("Evaluation"):
-                                    logtree.log_text(response.evaluation)
-                                if response.comparison_text:
-                                    with logtree.scope_details("Comparison"):
-                                        logtree.log_text(response.comparison_text)
-                                with logtree.scope_details("Raw response"):
-                                    logtree.log_text(response.raw_response)
+                log_debate_transcript(coordinator)
 
-            reward, metrics = compute_one_agent_reward(
-                coordinator=coordinator, agent_id=env.agent_id
-            )
-            rewards_and_metrics.append((reward, metrics))
+            results: list[tuple[float, Metrics]] = []
+            for agent_id in range(self.num_agents):
+                latest = _latest_response_by_author(
+                    coordinator.state.agent_responses, author_id=agent_id
+                )
 
-        return rewards_and_metrics
+                if latest is None:
+                    metrics = {
+                        "agent_id": float(agent_id),
+                        "format": 0.0,
+                        "correct": 0.0,
+                        "missing_response": 1.0,
+                        "eval_mode": self.eval_mode,
+                    }
+                else:
+                    metrics = compute_correctness_metrics(latest.solution, agent_id)
+
+                results.append((0.0, metrics))  # No reward, only metrics
+
+            return results
+
+        raise ValueError(f"Invalid eval_mode: {self.eval_mode}")
 
 
 class VerifiableMathDebateDataset(RLDataset):
@@ -579,6 +560,10 @@ class VerifiableMathDebateDataset(RLDataset):
         model_name: str,
         opponent_policies: list[TinkerMessageCompleter] | None = None,
         grader: Literal["sympy", "math_verify"] = "sympy",
+        format_coef: float = 0.1,
+        grade_timeout: float = 1.0,
+        eval_mode: Literal["direct", "debate", "both"] = "debate",
+        is_training: bool = True,
     ):
         self.batch_size = batch_size
         self.problems = problems
@@ -594,6 +579,10 @@ class VerifiableMathDebateDataset(RLDataset):
         self.model_name = model_name
         self.opponent_policies = opponent_policies
         self.grader = grader
+        self.format_coef = format_coef
+        self.grade_timeout = grade_timeout
+        self.eval_mode = eval_mode
+        self.is_training = is_training
 
     def get_batch(self, index: int) -> Sequence[EnvGroupBuilder]:
         batch_start = index * self.batch_size
@@ -612,8 +601,11 @@ class VerifiableMathDebateDataset(RLDataset):
                 log_full_transcript=self.log_full_transcript,
                 max_rounds=self.max_rounds,
                 model_name=self.model_name,
-                opponent_policies_all=self.opponent_policies,
                 grader=self.grader,
+                format_coef=self.format_coef,
+                grade_timeout=self.grade_timeout,
+                eval_mode=self.eval_mode,
+                is_training=self.is_training,
             )
             for problem_index in range(batch_start, batch_end)
         ]
@@ -643,6 +635,9 @@ class VerifiableMathDebateDatasetBuilder(RLDatasetBuilder):
     test_question_frac: float = 0.1
     opponent_model_name: str | None = None
     grader: Literal["sympy", "math_verify"] = "sympy"
+    format_coef: float = 0.1
+    grade_timeout: float = 1.0
+    eval_mode: Literal["direct", "debate", "both"] = "debate"
 
     def _load_problems_from_file(self) -> list[VerifiableMathProblem]:
         import json
@@ -687,23 +682,6 @@ class VerifiableMathDebateDatasetBuilder(RLDatasetBuilder):
         test_n = max(1, min(test_n, len(shuffled) - 1))
         return shuffled[test_n:], shuffled[:test_n]
 
-    def _construct_fixed_opponent_policies(
-        self, renderer: Renderer
-    ) -> list[TinkerMessageCompleter]:
-        service_client = tinker.ServiceClient()
-        sampling_client = service_client.create_sampling_client(
-            base_model=self.opponent_model_name or self.model_name
-        )
-        return [
-            TinkerMessageCompleter(
-                sampling_client=sampling_client,
-                renderer=renderer,
-                max_tokens=2048,
-                stop_condition=_get_debate_stop_condition(renderer),
-            )
-            for _ in range(self.num_agents)
-        ]
-
     async def __call__(
         self,
     ) -> tuple[VerifiableMathDebateDataset, VerifiableMathDebateDataset | None]:
@@ -724,23 +702,23 @@ class VerifiableMathDebateDatasetBuilder(RLDatasetBuilder):
             max_rounds=self.max_rounds,
             num_datapoints=self.num_train_datapoints,
             model_name=self.model_name,
-            opponent_policies=None,
-            format_coef=self.format_coef,
             grader=self.grader,
+            format_coef=self.format_coef,
             grade_timeout=self.grade_timeout,
+            eval_mode="debate",  # Training always uses debate mode
+            is_training=True,  # Training dataset computes step-wise rewards
         )
 
         test_dataset: VerifiableMathDebateDataset | None
         if self.num_test_datapoints <= 0 or not test_problems:
             test_dataset = None
         else:
-            opponent_policies_all = self._construct_fixed_opponent_policies(renderer)
             test_dataset = VerifiableMathDebateDataset(
                 batch_size=min(self.num_test_datapoints, self.batch_size),
                 problems=test_problems,
                 num_agents=self.num_agents,
                 renderer=renderer,
-                self_play=False,
+                self_play=True,  # Evaluation also uses self-play (no fixed opponents)
                 history_turns=self.history_rounds,
                 summarize_history=self.summarize_history,
                 summarize_model=self.summarize_model,
@@ -748,8 +726,11 @@ class VerifiableMathDebateDatasetBuilder(RLDatasetBuilder):
                 max_rounds=self.max_rounds,
                 num_datapoints=self.num_test_datapoints,
                 model_name=self.model_name,
-                opponent_policies=opponent_policies_all,
                 grader=self.grader,
+                format_coef=self.format_coef,
+                grade_timeout=self.grade_timeout,
+                eval_mode=self.eval_mode,  # Uses builder's eval_mode (configurable)
+                is_training=False,  # Test dataset only computes metrics (no rewards)
             )
 
         return train_dataset, test_dataset

@@ -75,6 +75,32 @@ Objective summary:
 Propose a high-quality solution; evaluate and compare other agents’ solution/evaluation/comparison content using the provided XML tags and order, always reasoning before reaching conclusions.
 """
 
+VERIFIABLE_AGENT_SYSTEM_PROMPT = """You are Agent {agent_id} participating in a multi-agent self-play debate to solve a verifiable math problem.
+
+Your objectives:
+- Propose or refine a correct solution to the problem.
+- In <solution>, include a final answer written in \\boxed{{...}} format.
+- Evaluate other agents’ recent contributions (solution + critique quality), and compare other agents’ outputs.
+
+OUTPUT FORMAT (use exact XML tags, in this order):
+
+<solution>
+Your detailed solution. You MUST include a final answer in \\boxed{{...}} format.
+</solution>
+
+<evaluation>
+Evaluate other agents’ recent work. If there are no prior completions visible, write "N/A".
+</evaluation>
+
+<comparison>
+Compare only OTHER agents visible in the history (never include yourself). If fewer than two other completions are visible, write "N/A".
+</comparison>
+
+Key reminders:
+- Use EXACTLY these three XML tags, in strict order.
+- Do NOT compare your own work in <comparison>.
+"""
+
 
 @dataclass
 class ParsedResponse:
