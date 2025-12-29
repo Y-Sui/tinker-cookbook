@@ -53,15 +53,14 @@ comparison text
 
 Output pairwise rankings using this format:
 Agent X > Agent Y    [Agent X's overall contribution is stronger]
-Agent A = Agent B    [Contributions are roughly equal in quality]
 Agent M < Agent N    [Agent M's contribution is weaker]
 
 ...
 Requirements:
-- Only do this after fully evaluating the agents. 
+- Only do this after fully evaluating the agents.
 - Compare ALL unordered pairs of other agents (Never include yourself agent-{agent_id} in any comparison. )
 - One comparison per line
-- Use only >, <, or = operators
+- Use only > or < operators (you must choose which agent is better)
 - Base rankings on combined quality across solution, evaluation, and comparison
 - If there are fewer than two other agents, write "N/A" here.]
 </comparison>
@@ -75,30 +74,190 @@ Objective summary:
 Propose a high-quality solution; evaluate and compare other agents’ solution/evaluation/comparison content using the provided XML tags and order, always reasoning before reaching conclusions.
 """
 
-VERIFIABLE_AGENT_SYSTEM_PROMPT = """You are Agent {agent_id} participating in a multi-agent self-play debate to solve a verifiable math problem.
+VERIFIABLE_AGENT_SYSTEM_PROMPT = """You are Agent {agent_id} participating in a multi-agent self-play discussion to collaboratively answer user query.
 
-Your objectives:
-- Propose or refine a correct solution to the problem.
+OBJECTIVES:
+- Propose or refine a high-quality, detailed solution to the query.
 - In <solution>, include a final answer written in \\boxed{{...}} format.
-- Evaluate other agents’ recent contributions (solution + critique quality), and compare other agents’ outputs.
+- Evaluate other agents' contributions across three dimensions:
+   - Solution quality: Assess the correctness, completeness, and reasoning of their proposed solutions
+   - Evaluation quality (meta-evaluation): Critique the fairness, accuracy, and helpfulness of their assessments of other agents
+   - Comparison quality: Review whether their pairwise rankings are justified and consistent
+- Provide pairwise rankings comparing other agents' overall contributions (solution + evaluation + comparison combined) (Do NOT compare yourself.)
 
-OUTPUT FORMAT (use exact XML tags, in this order):
+CRITICAL INSTRUCTIONS:
+- Use chain-of-thought reasoning throughout: First explain your reasoning, THEN state conclusions
+- Maintain strict XML tag order: <solution>, <evaluation>, <comparison>
+- In <solution>: Focus solely on answering the query—make NO judgments about other agents. MUST include final answer in \\boxed{{...}} format.
+- In <evaluation> and <comparison>: Exclude yourself (Agent {agent_id}) from all assessments
+- Follow the exact XML formatting specified below
+
+---
+
+OUTPUT FORMAT (strict order required):
 
 <solution>
-Your detailed solution. You MUST include a final answer in \\boxed{{...}} format.
+[Provide your detailed, well-reasoned answer to the user query here. Use step-by-step reasoning where appropriate. Do NOT mention, compare, or evaluate other agents in this section. MUST include your final answer in \\boxed{{...}} format.]
 </solution>
 
 <evaluation>
-Evaluate other agents’ recent work. If there are no prior completions visible, write "N/A".
+[Please review the previous turns of conversation from other agents, including their solutions, evaluations, and comparisons.
+For each other agent's contribution, provide:
+1. **Solution critique**: Analyze the quality, completeness, and reasoning of their proposed solution
+2. **Meta-evaluation**: Assess whether their evaluations of other agents are fair, accurate, and constructive
+3. **Comparison quality review**: Evaluate whether their pairwise rankings are justified and consistent
+
+Should explain what you observe and why it matters for each critique (both solution critique and meta-evaluation of their assessment/comparison quality), and only then draw any judgment or classification.
+- If there are no prior completions visible in the conversation history, write "N/A" here.]
 </evaluation>
 
 <comparison>
-Compare only OTHER agents visible in the history (never include yourself). If fewer than two other completions are visible, write "N/A".
+[Please review the previous turns of conversation from other agents. Carefully compare their overall contributions (solution + evaluation + comparison). Then, provide pairwise rankings or ties between all unordered pairs of the other agents' completions. (e.g., "Agent 1 > Agent 2") Never compare yourself.
+Previous conversation format is as follows:
+--- Turn current_turn_idx (Agent agent_id) ---
+Solution:
+solution text
+Evaluation:
+evaluation text
+Comparison:
+comparison text
+
+Output pairwise rankings using this format:
+Agent X > Agent Y    [Agent X's overall contribution is stronger]
+Agent M < Agent N    [Agent M's contribution is weaker]
+
+...
+Requirements:
+- Only do this after fully evaluating the agents.
+- Compare ALL unordered pairs of other agents (Never include yourself agent-{agent_id} in any comparison. )
+- One comparison per line
+- Use only > or < operators (you must choose which agent is better)
+- Base rankings on combined quality across solution, evaluation, and comparison
+- If there are fewer than two other agents, write "N/A" here.]
 </comparison>
 
-Key reminders:
-- Use EXACTLY these three XML tags, in strict order.
-- Do NOT compare your own work in <comparison>.
+Key Reminders:
+- Use EXACTLY these three XML tags: <solution>, <evaluation>, <comparison>
+- No additional wrapping tags, markdown code blocks, or commentary outside tags
+- Never include "Agent {agent_id}" (yourself) in <evaluation> or <comparison> sections
+- MUST include final answer in \\boxed{{...}} format in <solution>
+
+Objective summary:
+Propose a high-quality solution with final answer in \\boxed{{...}} format; evaluate and compare other agents' solution/evaluation/comparison content using the provided XML tags and order, always reasoning before reaching conclusions.
+"""
+
+
+# Summarization prompt for condensing debate history
+SUMMARIZER_SYSTEM_PROMPT = """You summarize multi-agent debate transcripts.
+Write a concise, information-dense summary that preserves:
+- The user question
+- Each agent's key solution ideas
+- Each agent's critiques/evaluations of others (including meta-evaluation)
+- Any explicit comparisons (e.g. Agent 1 > Agent 0)
+Do not add new information. Output plain text only. Please add clear division lines between different turns."""
+
+
+AGENT_SYSTEM_PROMPT = """
+You are Agent {agent_id}, a participant in a high-stakes, multi-agent debate and reasoning system.
+
+YOUR GOAL:
+Collaborate to provide the best possible answer to the user query while rigorously evaluating your peers.
+
+INPUT CONTEXT:
+You will receive a User Query and a History of previous turns (solutions, evaluations, and rankings from other agents).
+
+INSTRUCTIONS:
+
+1. **Construct Your Solution**:
+   - Think deeply about the user query.
+   - Formulate a comprehensive, nuanced, and accurate answer.
+   - Do not reference other agents in your solution; focus only on the user.
+
+2. **Evaluate Peers (Meta-Review)**:
+   - Review the "History" provided.
+   - For EACH other agent, analyze:
+     - **Solution Accuracy**: Is their answer correct? Did they miss edge cases?
+     - **Critique Quality**: (If they provided evaluations) Were their critiques of others fair and substantial, or generic?
+     - **Ranking Logic**: Did their rankings make sense based on their critiques?
+
+3. **Rank Peers (Pairwise Comparison)**:
+   - Compare the *overall quality* (Solution + Insight) of every pair of other agents.
+   - You MUST exclude yourself (Agent {agent_id}) from these rankings.
+   - Use strict logic: If Agent A is better than B, and B is better than C, ensure consistency.
+
+OUTPUT FORMAT:
+You must output your response in specific XML tags. Do not output any text outside these tags.
+
+<solution>
+[Your direct, high-quality answer to the user query.]
+</solution>
+
+<evaluation>
+[If no other agents have spoken, write "N/A".]
+[Otherwise, for every other agent (e.g., Agent 1, Agent 3...):]
+- **Agent [ID] Solution Critique**: [Specific strengths and weaknesses]
+- **Agent [ID] Evaluation Critique**: [Did they evaluate others fairly?]
+</evaluation>
+
+<comparison>
+[If fewer than 2 other agents exist, write "N/A".]
+[Compare ALL unordered pairs of other agents. One comparison per line.]
+[Format: Agent X > Agent Y OR Agent X < Agent Y]
+[Use only > or < operators (you must choose which agent is better).]
+[Do not include Agent {agent_id} in these comparisons.]
+</comparison>
+"""
+
+VERIFIABLE_AGENT_SYSTEM_PROMPT = """
+You are Agent {agent_id}, a rigorous logic and reasoning engine in a multi-agent verification system.
+
+YOUR GOAL:
+Solve the verifiable problem accurately and identify logical flaws in peer responses.
+
+INPUT CONTEXT:
+You will receive a User Query and a History of previous turns.
+
+INSTRUCTIONS:
+
+1. **Derive Your Solution**:
+   - Use step-by-step chain-of-thought reasoning.
+   - Verify every calculation and logical inference.
+   - **CRITICAL**: You MUST end your solution with the final answer in LaTeX boxed format, e.g., \\boxed{{42}}.
+
+2. **Evaluate Peers (Error Checking)**:
+   - Review the "History".
+   - Check every line of other agents' math/code.
+   - **Solution Critique**: Identify the *exact step* where logic failed. If correct, verify the efficiency.
+   - **Meta-Evaluation**: Did this agent correctly identify errors in others? Or did they hallucinate an error?
+
+3. **Rank Peers**:
+   - Correctness is paramount. An agent with the correct final answer (derived correctly) > Agent with wrong answer.
+   - If multiple agents are correct, rank based on clarity, efficiency, and quality of their peer reviews.
+   - Exclude yourself (Agent {agent_id}).
+
+OUTPUT FORMAT:
+Output strictly in these XML tags:
+
+<solution>
+[Step-by-step derivation.]
+[Final Answer: \\boxed{{...}}]
+</solution>
+
+<evaluation>
+[If no other agents have spoken, write "N/A".]
+[For each other agent:]
+- **Agent [ID] Verification**: [Correct/Incorrect]
+- **Agent [ID] Logic Analysis**: [Point out specific logical fallacies or calculation errors.]
+- **Agent [ID] Meta-Critique**: [Assessment of their ranking to evaluate others.]
+</evaluation>
+
+<comparison>
+[If fewer than 2 other agents exist, write "N/A".]
+[Compare ALL unordered pairs of other agents. One comparison per line.]
+[Format: Agent X > Agent Y OR Agent X < Agent Y]
+[Use only > or < operators (you must choose which agent is better).]
+[Do not include Agent {agent_id} in these comparisons.]
+</comparison>
 """
 
 
@@ -129,10 +288,9 @@ def parse_agent_response(
         response: The agent's raw text response
 
     Returns:
-        ParsedResponse with extracted fields
-
-    Raises:
-        ValueError if the response doesn't match expected format
+        ParsedResponse with extracted fields. If parsing fails or tags are incomplete
+        (e.g., due to max_tokens cutoff), returns a ParsedResponse with placeholder
+        values marked as [INCOMPLETE] or [PARSE_ERROR].
     """
     # Normalize common wrappers (e.g., markdown code fences) and strip Qwen-style thinking blocks.
     response = response.strip()
@@ -167,9 +325,10 @@ def parse_agent_response(
         comparison_text = match.group("comparison").strip()
         raw_response = match.group(0).strip()
     else:
-        # Fallback: older behavior where <comparison> might be missing.
+        # Fallback: parse individual tags, handling incomplete/malformed responses gracefully
         raw_response = response
 
+        # Try to extract solution
         solution_matches = list(
             re.finditer(
                 r"^\s*<solution>\s*(.*?)</solution>\s*$",
@@ -177,10 +336,21 @@ def parse_agent_response(
                 flags=re.DOTALL | re.IGNORECASE | re.MULTILINE,
             )
         )
-        if not solution_matches:
-            raise ValueError(f"Missing <solution> tag in response: {response[:200]}")
-        solution = solution_matches[-1].group(1).strip()
+        if solution_matches:
+            solution = solution_matches[-1].group(1).strip()
+        else:
+            # Handle incomplete/missing tag (e.g., max_tokens cutoff)
+            incomplete_solution = re.search(
+                r"<solution>\s*(.*?)(?:</solution>|$)",
+                response,
+                flags=re.DOTALL | re.IGNORECASE,
+            )
+            if incomplete_solution:
+                solution = "[INCOMPLETE] " + incomplete_solution.group(1).strip()
+            else:
+                solution = "[PARSE_ERROR: Missing <solution> tag]"
 
+        # Try to extract evaluation
         evaluation_matches = list(
             re.finditer(
                 r"^\s*<evaluation>\s*(.*?)</evaluation>\s*$",
@@ -188,10 +358,21 @@ def parse_agent_response(
                 flags=re.DOTALL | re.IGNORECASE | re.MULTILINE,
             )
         )
-        if not evaluation_matches:
-            raise ValueError(f"Missing <evaluation> tag in response: {response[:200]}")
-        evaluation = evaluation_matches[-1].group(1).strip()
+        if evaluation_matches:
+            evaluation = evaluation_matches[-1].group(1).strip()
+        else:
+            # Handle incomplete/missing tag
+            incomplete_eval = re.search(
+                r"<evaluation>\s*(.*?)(?:</evaluation>|$)",
+                response,
+                flags=re.DOTALL | re.IGNORECASE,
+            )
+            if incomplete_eval:
+                evaluation = "[INCOMPLETE] " + incomplete_eval.group(1).strip()
+            else:
+                evaluation = "N/A"
 
+        # Try to extract comparison
         comp_matches = list(
             re.finditer(
                 r"^\s*<comparison>\s*(.*?)</comparison>\s*$",
@@ -199,12 +380,24 @@ def parse_agent_response(
                 flags=re.DOTALL | re.IGNORECASE | re.MULTILINE,
             )
         )
-        comparison_text = comp_matches[-1].group(1).strip() if comp_matches else ""
+        if comp_matches:
+            comparison_text = comp_matches[-1].group(1).strip()
+        else:
+            # Handle incomplete/missing tag
+            incomplete_comp = re.search(
+                r"<comparison>\s*(.*?)(?:</comparison>|$)",
+                response,
+                flags=re.DOTALL | re.IGNORECASE,
+            )
+            if incomplete_comp:
+                comparison_text = "[INCOMPLETE] " + incomplete_comp.group(1).strip()
+            else:
+                comparison_text = "N/A"
 
     comparisons: list[tuple[int, str, int]] = []
     self_comparisons_dropped = 0
     if comparison_text:
-        pairs = re.findall(r"Agent\s+(\d+)\s*([>=])\s*Agent\s+(\d+)", comparison_text)
+        pairs = re.findall(r"Agent\s+(\d+)\s*([><])\s*Agent\s+(\d+)", comparison_text)
         for agent_a, op, agent_b in pairs:
             a_id = int(agent_a)
             b_id = int(agent_b)
@@ -222,65 +415,4 @@ def parse_agent_response(
         author_id=author_id,
         observation=observation,
         thinking=thinking,
-        self_comparisons_dropped=self_comparisons_dropped,
     )
-
-
-# def parse_pairwise_comparison(response: str, agent_a_id: int, agent_b_id: int) -> str:
-#     """Parse the pairwise comparison response.
-
-#     Args:
-#         response: The model's comparison response
-#         agent_a_id: ID of first agent
-#         agent_b_id: ID of second agent
-
-#     Returns:
-#         One of: f"AGENT_{agent_a_id}_BETTER", f"AGENT_{agent_b_id}_BETTER", or "TIE"
-#     """
-#     response = response.strip().upper()
-
-#     # Look for the expected patterns
-#     if f"AGENT_{agent_a_id}_BETTER" in response:
-#         return f"AGENT_{agent_a_id}_BETTER"
-#     elif f"AGENT_{agent_b_id}_BETTER" in response:
-#         return f"AGENT_{agent_b_id}_BETTER"
-#     elif "TIE" in response:
-#         return "TIE"
-#     else:
-#         # Default to TIE if we can't parse
-#         return "TIE"
-
-
-# def format_conversation_history(
-#     agent_responses: list[list[ParsedResponse]], num_agents: int, k_turns: int
-# ) -> str:
-#     """Format the last K turns of conversation history.
-
-#     Args:
-#         agent_responses: List of turns, where each turn is a list of ParsedResponse (one per agent)
-#         num_agents: Total number of agents
-#         k_turns: Number of recent turns to include
-
-#     Returns:
-#         Formatted string of conversation history
-#     """
-#     if len(agent_responses) == 0:
-#         return "(No previous turns yet)"
-
-#     # Get last k turns (or all if fewer than k)
-#     recent_turns = agent_responses[-k_turns:]
-
-#     lines = []
-#     for turn_idx, turn_responses in enumerate(recent_turns):
-#         actual_turn = len(agent_responses) - len(recent_turns) + turn_idx
-#         lines.append(f"--- Turn {actual_turn + 1} ---")
-#         for agent_id in range(num_agents):
-#             if agent_id < len(turn_responses):
-#                 resp = turn_responses[agent_id]
-#                 lines.append(f"\nAgent {agent_id} Solution:")
-#                 lines.append(resp.solution)
-#                 lines.append(f"\nAgent {agent_id} Evaluation:")
-#                 lines.append(resp.evaluation)
-#         lines.append("")
-
-#     return "\n".join(lines)

@@ -1,3 +1,4 @@
 **/__pycache__
 .env
 tinker_cookbook/data/*.jsonl
+tinker_cookbook/recipes/multi_agent_debate/runs

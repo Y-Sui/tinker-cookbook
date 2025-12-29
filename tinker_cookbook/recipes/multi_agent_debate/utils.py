@@ -74,6 +74,46 @@ def log_debate_transcript(coordinator: "MultiAgentCoordinator") -> None:
                         logtree.log_text(response.raw_response)
 
 
+def log_direct_evaluation(
+    problem: str, response_text: str, parsed_solution: str, metrics: dict[str, float]
+) -> None:
+    """Log direct evaluation results including system prompt, completion, and solution."""
+    with logtree.scope_header("Direct Evaluation"):
+        with logtree.scope_details("System prompt"):
+            logtree.log_text(
+                "Solve the following math problem. Write your final answer in \\boxed{} format."
+            )
+        with logtree.scope_details("Problem"):
+            logtree.log_text(problem)
+        with logtree.scope_details("Completion (raw response)"):
+            logtree.log_text(response_text)
+        with logtree.scope_details("Parsed solution"):
+            logtree.log_text(parsed_solution)
+        with logtree.scope_details("Metrics"):
+            logtree.log_text(str(metrics))
+
+
+def log_debate_evaluation_final_solutions(
+    agent_solutions: list[tuple[int, str | None, str, dict[str, float]]]
+) -> None:
+    """Log final solutions and metrics for each agent in debate evaluation.
+
+    Args:
+        agent_solutions: List of (agent_id, solution_text, parsed_answer, metrics) tuples
+    """
+    with logtree.scope_header("Final Solutions and Metrics"):
+        for agent_id, solution_text, parsed_answer, metrics in agent_solutions:
+            with logtree.scope_header(f"Agent {agent_id}"):
+                if solution_text is None:
+                    logtree.log_text("(No response)")
+                else:
+                    with logtree.scope_details("Final solution text"):
+                        logtree.log_text(solution_text)
+                    with logtree.scope_details("Parsed answer"):
+                        logtree.log_text(parsed_answer)
+                logtree.log_text(f"Metrics: {metrics}")
+
+
 def get_debate_stop_condition(renderer: Renderer) -> StopCondition:
     """
     Pick stop sequences that are compatible with the active renderer.

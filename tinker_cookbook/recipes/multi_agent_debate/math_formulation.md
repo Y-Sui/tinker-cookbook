@@ -86,12 +86,12 @@ From the `<comparison>` block, the parser extracts zero or more lines matching:
 
 ```
 Agent A > Agent B
-Agent A = Agent B
+Agent A < Agent B
 ```
 
 Each extracted line yields a tuple:
 \[
-(a,\operatorname{op},b), \quad \operatorname{op}\in\{>,=\}.
+(a,\operatorname{op},b), \quad \operatorname{op}\in\{>,<\}.
 \]
 
 **Authorship is attached at submission time** (the coordinator knows which agent produced the response), yielding:
@@ -200,9 +200,9 @@ Across all agents and all rounds, the set of authored comparisons is:
 
 - \(a,b \in \{0,\dots,N-1\}\),
 - \(a \neq b\),
-- \(\operatorname{op} \in \{>,=\}\).
+- \(\operatorname{op} \in \{>,<\}\).
 
-Invalid comparisons are discarded and counted as “malformed” in metrics.
+Invalid comparisons are discarded and counted as "malformed" in metrics.
 
 If there are no valid comparisons, all final rewards default to 0.
 
@@ -222,13 +222,13 @@ For each valid comparison \((u,a,\operatorname{op},b)\), update **for each targe
 
 Then:
 
-- If \(\operatorname{op} = >\), the comparison says “\(a\) beats \(b\)”:
+- If \(\operatorname{op} = >\), the comparison says "\(a\) beats \(b\)":
   \[
   W_a \mathrel{+}= 1,\quad V_a \mathrel{+}= 1,\quad V_b \mathrel{+}= 1.
   \]
-- If \(\operatorname{op} = =\), the comparison says “\(a\) ties \(b\)”:
+- If \(\operatorname{op} = <\), the comparison says "\(a\) loses to \(b\)":
   \[
-  W_a \mathrel{+}= \tfrac12,\quad W_b \mathrel{+}= \tfrac12,\quad V_a \mathrel{+}= 1,\quad V_b \mathrel{+}= 1.
+  W_b \mathrel{+}= 1,\quad V_a \mathrel{+}= 1,\quad V_b \mathrel{+}= 1.
   \]
 
 The final reward is:
@@ -241,7 +241,7 @@ r^{\text{win\_rate}}_{p,i} =
 \quad\in[0,1].
 \]
 
-Interpretation: “fraction of peer votes the agent wins, with ties = 0.5”.
+Interpretation: "fraction of peer votes the agent wins".
 
 ## Reward Function 2: Win Minus Loss (Leave-One-Out, `reward_mode=win_minus_loss`)
 
@@ -267,7 +267,10 @@ If \(\operatorname{op} = >\):
 S_a \mathrel{+}= 1,\quad S_b \mathrel{-}= 1.
 \]
 
-If \(\operatorname{op} = =\), no score change.
+If \(\operatorname{op} = <\):
+\[
+S_a \mathrel{-}= 1,\quad S_b \mathrel{+}= 1.
+\]
 
 Final reward:
 \[

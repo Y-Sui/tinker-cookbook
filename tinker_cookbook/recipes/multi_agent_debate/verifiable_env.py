@@ -12,22 +12,20 @@ implementations isolated.
 from __future__ import annotations
 
 import math
-import random
 from dataclasses import dataclass
 from typing import Literal, Sequence
 
 import chz
-import tinker
 from tinker import types
 
-from tinker_cookbook.completers import StopCondition, TinkerMessageCompleter
+from tinker_cookbook.completers import StopCondition
 from tinker_cookbook.recipes.math_rl.math_grading import (
     extract_boxed,
     grade_answer,
     grade_answer_math_verify,
     run_with_timeout_signal,
 )
-from tinker_cookbook.renderers import Message, Renderer, ensure_text, get_renderer
+from tinker_cookbook.renderers import Renderer, get_renderer
 from tinker_cookbook.rl.types import (
     Action,
     Env,
@@ -41,24 +39,17 @@ from tinker_cookbook.rl.types import (
 )
 from tinker_cookbook.tokenizer_utils import get_tokenizer
 
-from .env import MultiAgentCoordinator
+from .base_env import BaseMultiAgentDebateEnv, BaseMultiAgentEnvGroupBuilder
+from .coordinator import MultiAgentCoordinator
+from .loaders import load_math_problems_from_jsonl, split_items
 from .prompts import VERIFIABLE_AGENT_SYSTEM_PROMPT, ParsedResponse
 from .utils import (
     STOP_CONDITION,
     get_debate_stop_condition,
-    get_step_idx_before_turn,
-    get_summarizer_stop_condition,
+    log_debate_evaluation_final_solutions,
     log_debate_transcript,
+    log_direct_evaluation,
 )
-
-QUESTION_SUFFIX = " Write your answer in \\boxed{} format."
-
-
-def _append_question_suffix(problem: str) -> str:
-    text = problem.rstrip()
-    if text.endswith(QUESTION_SUFFIX.rstrip()):
-        return text
-    return text + QUESTION_SUFFIX
 
 
 def safe_grade(
@@ -98,13 +89,15 @@ class DirectMathEvaluationEnv(Env):
     renderer: Renderer
 
     async def initial_observation(self) -> tuple[Observation, StopCondition]:
-        question = _append_question_suffix(self.problem.problem)
         messages = [
             {
                 "role": "system",
-                "content": "Solve the following math problem. Write your final answer in \\boxed{} format.",
+                "content": "Solve the following math problem. Write your final answer in \\boxed{} format. No need to do extended reasoning.",
             },
-            {"role": "user", "content": question},
+            {
+                "role": "user",
+                "content": self.problem.problem,
+            },
         ]
         return (
             self.renderer.build_generation_prompt(messages),
@@ -123,20 +116,8 @@ class DirectMathEvaluationEnv(Env):
 
 
 @dataclass
-class VerifiableMultiAgentDebateEnv(Env):
+class VerifiableMultiAgentDebateEnv(BaseMultiAgentDebateEnv):
     """Environment for one agent in a verifiable multi-agent debate."""
-
-    agent_id: int
-    coordinator: MultiAgentCoordinator
-    renderer: Renderer
-    self_play: bool = True
-    history_turns: int = 2
-    summarize_history: bool = False
-    summarize_model: str | None = "Qwen/Qwen3-4B-Instruct-2507"
-    model_name: str | None = None
-
-    def __post_init__(self) -> None:
-        assert self.self_play, "Only self-play mode is supported"
 
     @property
     def stop_condition(self) -> StopCondition:
@@ -148,162 +129,64 @@ class VerifiableMultiAgentDebateEnv(Env):
     def _format_turns(self, turns: list[ParsedResponse]) -> str:
         if not turns:
             return ""
-        lines: list[str] = []
+        lines: list[str] = ["--- HISTORY OF PREVIOUS TURNS ---"]
         for turn_idx, response in enumerate(turns, start=1):
-            lines.append(f"--- Turn {turn_idx} (Agent {response.author_id}) ---")
-            lines.append("Solution:")
+            lines.append(f"== Turn {turn_idx} (Agent {response.author_id}) ==")
+            lines.append(f"Agent {response.author_id}'s Solution:")
             lines.append(response.solution.rstrip())
-            lines.append("Evaluation:")
+            lines.append(f"Agent {response.author_id}'s Evaluation:")
             lines.append(response.evaluation.rstrip())
             if response.comparison_text:
-                lines.append("Comparison:")
+                lines.append(f"Agent {response.author_id}'s Comparison:")
                 lines.append(response.comparison_text.rstrip())
             lines.append("")
+        lines.append("--- END OF HISTORY ---\n")
         return "\n".join(lines).rstrip()
 
-    async def _summarize(self, history: str) -> str:
-        service_client = tinker.ServiceClient()
-        sampling_client = service_client.create_sampling_client(
-            base_model=self.summarize_model or self.model_name
-        )
-        summarizer_policy = TinkerMessageCompleter(
-            sampling_client=sampling_client,
-            renderer=self.renderer,
-            max_tokens=892,
-            stop_condition=get_summarizer_stop_condition(self.renderer),
-        )
-        messages: list[Message] = [
-            {
-                "role": "system",
-                "content": (
-                    "You summarize multi-agent debate transcripts.\n"
-                    "Write a concise, information-dense summary that preserves:\n"
-                    "- The user question\n"
-                    "- Each agent's key solution ideas\n"
-                    "- Each agent's critiques/evaluations of others\n"
-                    "- Any explicit comparisons\n"
-                    "Do not add new information. Output plain text only."
-                ),
-            },
-            {"role": "user", "content": history},
-        ]
-        resp = await summarizer_policy(messages)
-        return ensure_text(resp["content"]).strip()
-
     async def get_conversation_context(self) -> str:
+        """Format the conversation context for this agent.
+
+        Shows recent history_turns. If summarize_history is True, summarizes them.
+        Otherwise, keeps them verbatim.
+        """
         if not self.coordinator.state.agent_responses:
             return ""
 
         question = self.coordinator.state.question
         turns = list(self.coordinator.state.agent_responses)
 
-        if not self.summarize_history:
-            return f"Question: {question}\n\n{self._format_turns(turns)}".rstrip()
-
+        # Get recent turns based on history_turns setting
         if self.history_turns < 0:
-            raw_recent = turns
-            older: list[ParsedResponse] = []
+            # Show all turns
+            recent_turns = turns
         elif self.history_turns == 0:
-            raw_recent = []
-            older = turns
+            # Show no turns
+            recent_turns = []
         else:
-            raw_recent = turns[-self.history_turns :] if len(turns) > self.history_turns else turns
-            older = turns[: -self.history_turns] if len(turns) > self.history_turns else []
+            # Show last N turns
+            recent_turns = (
+                turns[-self.history_turns :] if len(turns) > self.history_turns else turns
+            )
 
-        summary = ""
-        if older:
-            older_text = f"Question: {question}\n\n{self._format_turns(older)}"
-            summary = await self._summarize(older_text)
+        history_text = f"USER QUERY: {question}\n{self._format_turns(recent_turns)}".rstrip()
 
-        recent_text = self._format_turns(raw_recent)
-        parts: list[str] = [f"Question: {question}"]
-        if summary:
-            parts.append("\n--- Summary of earlier turns ---\n" + summary)
-        if recent_text:
-            parts.append("\n--- Recent turns (verbatim) ---\n" + recent_text)
-        return "\n".join(parts).rstrip()
-
-    async def initial_observation(self) -> tuple[Observation, StopCondition]:
-        if self.agent_id != 0:
-            await self.wait_for_turn()
-        return await self.get_observation(), self.stop_condition
-
-    async def wait_for_turn(self) -> None:
-        if not self.coordinator.done:
-            await self.coordinator.wait_for_turn(self.agent_id)
+        return await self._summarize(history_text) if self.summarize_history else history_text
 
     async def get_observation_string(self) -> str:
         history = await self.get_conversation_context()
         turn_idx = self.coordinator.state.current_turn
-        cycle_idx = self.coordinator.state.get_current_cycle()
-        max_cycles = self.coordinator.state.max_turns // self.coordinator.state.num_agents
-
+        # First turn prompt
         if turn_idx == 0:
             return (
-                f"Question: {self.coordinator.state.question}\n\n"
-                f"Cycle {cycle_idx + 1} of {max_cycles}, Turn {turn_idx + 1}.\n"
-                "First completion: propose your solution and include a final \\boxed{...} answer.\n"
-                'Set <evaluation> to "N/A" and <comparison> to "N/A".'
+                f"Agent {self.coordinator.state.current_agent_id}, please proceed with your response.\n\n"
+                'Set <evaluation> to "N/A" and <comparison> to "N/A" as this is the first turn.\n'
+                "Noted that your <solution> must include your final answer in \\boxed{...} format;"
             )
-
+        # Regular turn prompt
         return (
-            f"{history}\n\n"
-            f"Cycle {cycle_idx + 1} of {max_cycles}, Turn {turn_idx + 1}.\n"
-            "Write a solution to the math problem. Include a final \\boxed{...} answer in <solution>.\n"
-            "In <evaluation>, evaluate the most recent visible prior completions (up to 2 turns).\n"
-            "In <comparison>, compare only OTHER agents visible in the history (never include yourself). If fewer than two "
-            'other completions are visible, write "N/A".'
-        )
-
-    async def get_observation(self) -> types.ModelInput:
-        observation_str = await self.get_observation_string()
-        messages: list[Message] = [
-            {"role": "system", "content": self.get_system_prompt()},
-            {"role": "user", "content": observation_str},
-        ]
-        return self.renderer.build_generation_prompt(messages)
-
-    async def step(self, action: Action) -> StepResult:
-        if self.coordinator.done:
-            return self.get_done_step()
-
-        observation_str = await self.get_observation_string()
-
-        action_message: Message = self.renderer.parse_response(action)[0]
-        action_content = ensure_text(action_message["content"])
-
-        try:
-            await self.coordinator.submit_response(
-                self.agent_id,
-                action_content,
-                observation=observation_str,
-            )
-        except ValueError:
-            await self.coordinator.abort()
-            return StepResult(
-                reward=-1.0,
-                episode_done=True,
-                next_observation=types.ModelInput.empty(),
-                next_stop_condition=self.stop_condition,
-                metrics={"parse_error": 1.0},
-            )
-
-        await self.wait_for_turn()
-        return StepResult(
-            reward=0.0,
-            episode_done=self.coordinator.done,
-            next_observation=await self.get_observation(),
-            next_stop_condition=self.stop_condition,
-            metrics={"cycle": float(self.coordinator.state.get_current_cycle())},
-        )
-
-    def get_done_step(self) -> StepResult:
-        return StepResult(
-            reward=0.0,
-            episode_done=True,
-            next_observation=types.ModelInput.empty(),
-            next_stop_condition=STOP_CONDITION,
-            metrics={},
+            f"{history}\n\n Agent {self.coordinator.state.current_agent_id}, it is your turn.\n"
+            "Please continue the debate by providing your solution, evaluation, and comparison."
+            "Noted that your <solution> must include your final answer in \\boxed{...} format; and the do not include Agent {agent_id} in your comparisons."
         )
 
 
@@ -324,11 +207,9 @@ def _extract_boxed_from_solution(solution: str) -> tuple[bool, str | None]:
 
 
 @dataclass
-class VerifiableMultiAgentEnvGroupBuilder(EnvGroupBuilder):
+class VerifiableMultiAgentEnvGroupBuilder(BaseMultiAgentEnvGroupBuilder):
     problems: list[VerifiableMathProblem]
     problem_index: int
-    renderer: Renderer
-    num_agents: int
     max_rounds: int
     self_play: bool
     history_turns: int = 2
@@ -355,11 +236,10 @@ class VerifiableMultiAgentEnvGroupBuilder(EnvGroupBuilder):
             ]
 
         # Debate mode (training or evaluation): multi-turn self-play debate
-        question = _append_question_suffix(problem.problem)
         max_turns = self.num_agents * self.max_rounds
 
         coordinator = MultiAgentCoordinator(
-            question=question, num_agents=self.num_agents, max_turns=max_turns
+            question=problem.problem, num_agents=self.num_agents, max_turns=max_turns
         )
         return [
             VerifiableMultiAgentDebateEnv(
@@ -374,69 +254,6 @@ class VerifiableMultiAgentEnvGroupBuilder(EnvGroupBuilder):
             )
             for i in range(self.num_agents)
         ]
-
-    def _populate_stepwise_rewards(
-        self,
-        trajectory_group: list[Trajectory],
-        env_group: Sequence[Env],
-    ) -> dict[str, float]:
-        """
-        Modify trajectories in-place to assign step-wise rewards based on comparisons.
-
-        Returns summary metrics.
-        """
-        env0 = env_group[0]
-        assert isinstance(env0, VerifiableMultiAgentDebateEnv)
-        coordinator = env0.coordinator
-
-        # Process each response in order
-        for turn_idx, response in enumerate(coordinator.state.agent_responses):
-            author_id = response.author_id
-
-            # Process each comparison from this response
-            for agent_a, op, agent_b in response.comparisons:
-                # Leave-one-out: skip if author is involved
-                if author_id == agent_a or author_id == agent_b:
-                    continue
-
-                # Validate agent IDs
-                if not (0 <= agent_a < self.num_agents and 0 <= agent_b < self.num_agents):
-                    continue
-                if agent_a == agent_b:
-                    continue
-                if op not in {">", "="}:
-                    continue
-
-                # Find step indices for agent_a and agent_b
-                # (most recent step before this turn)
-                agent_a_step_idx = get_step_idx_before_turn(agent_a, turn_idx, self.num_agents)
-                agent_b_step_idx = get_step_idx_before_turn(agent_b, turn_idx, self.num_agents)
-
-                # Skip if either agent hasn't acted yet
-                if agent_a_step_idx < 0 or agent_b_step_idx < 0:
-                    continue
-
-                # Assign rewards (mutate trajectories in-place)
-                if op == ">":
-                    trajectory_group[agent_a].transitions[agent_a_step_idx].reward += 1.0
-                    trajectory_group[agent_b].transitions[agent_b_step_idx].reward -= 1.0
-                elif op == "=":
-                    # Equal comparison: no reward change (or could use ±0.5)
-                    pass
-
-        # Compute summary metrics
-        total_comparisons_used = 0
-        total_rewards_assigned = 0
-        for trajectory in trajectory_group:
-            for transition in trajectory.transitions:
-                if transition.reward != 0.0:
-                    total_rewards_assigned += 1
-                    total_comparisons_used += abs(transition.reward)
-
-        return {
-            "stepwise_comparisons_used": total_comparisons_used,
-            "stepwise_rewards_assigned": total_rewards_assigned,
-        }
 
     async def compute_group_rewards(
         self, trajectory_group: list[Trajectory], env_group: Sequence[Env]
@@ -483,7 +300,6 @@ class VerifiableMultiAgentEnvGroupBuilder(EnvGroupBuilder):
                 "agent_id": float(agent_id),
                 "format": 1.0 if has_box else 0.0,
                 "correct": 1.0 if correct else 0.0,
-                "eval_mode": self.eval_mode,
             }
 
         # Evaluation modes: no rewards, only metrics
@@ -499,7 +315,6 @@ class VerifiableMultiAgentEnvGroupBuilder(EnvGroupBuilder):
                             "format": 0.0,
                             "correct": 0.0,
                             "missing_response": 1.0,
-                            "eval_mode": self.eval_mode,
                         },
                     )
                 ]
@@ -508,6 +323,18 @@ class VerifiableMultiAgentEnvGroupBuilder(EnvGroupBuilder):
             response_text = self.renderer.parse_response(action_tokens)[0]["content"]
 
             metrics = compute_correctness_metrics(response_text, agent_id=0)
+
+            # Log direct evaluation details
+            if self.log_full_transcript:
+                _, boxed = _extract_boxed_from_solution(response_text)
+                parsed_solution = boxed if boxed is not None else "(No boxed answer found)"
+                log_direct_evaluation(
+                    problem=problem.problem,
+                    response_text=response_text,
+                    parsed_solution=parsed_solution,
+                    metrics=metrics,
+                )
+
             return [(0.0, metrics)]  # No reward, only metrics
 
         # Debate evaluation: multi-turn self-play, check all agents' final answers
@@ -520,6 +347,8 @@ class VerifiableMultiAgentEnvGroupBuilder(EnvGroupBuilder):
                 log_debate_transcript(coordinator)
 
             results: list[tuple[float, Metrics]] = []
+            agent_solutions_for_logging: list[tuple[int, str | None, str, dict[str, float]]] = []
+
             for agent_id in range(self.num_agents):
                 latest = _latest_response_by_author(
                     coordinator.state.agent_responses, author_id=agent_id
@@ -531,12 +360,24 @@ class VerifiableMultiAgentEnvGroupBuilder(EnvGroupBuilder):
                         "format": 0.0,
                         "correct": 0.0,
                         "missing_response": 1.0,
-                        "eval_mode": self.eval_mode,
                     }
+                    if self.log_full_transcript:
+                        agent_solutions_for_logging.append(
+                            (agent_id, None, "(No response)", metrics)
+                        )
                 else:
                     metrics = compute_correctness_metrics(latest.solution, agent_id)
+                    if self.log_full_transcript:
+                        _, boxed = _extract_boxed_from_solution(latest.solution)
+                        parsed_answer = boxed if boxed is not None else "(No boxed answer found)"
+                        agent_solutions_for_logging.append(
+                            (agent_id, latest.solution, parsed_answer, metrics)
+                        )
 
                 results.append((0.0, metrics))  # No reward, only metrics
+
+            if self.log_full_transcript:
+                log_debate_evaluation_final_solutions(agent_solutions_for_logging)
 
             return results
 
@@ -558,7 +399,6 @@ class VerifiableMathDebateDataset(RLDataset):
         max_rounds: int,
         num_datapoints: int,
         model_name: str,
-        opponent_policies: list[TinkerMessageCompleter] | None = None,
         grader: Literal["sympy", "math_verify"] = "sympy",
         format_coef: float = 0.1,
         grade_timeout: float = 1.0,
@@ -577,7 +417,6 @@ class VerifiableMathDebateDataset(RLDataset):
         self.max_rounds = max_rounds
         self.num_datapoints = num_datapoints
         self.model_name = model_name
-        self.opponent_policies = opponent_policies
         self.grader = grader
         self.format_coef = format_coef
         self.grade_timeout = grade_timeout
@@ -633,61 +472,28 @@ class VerifiableMathDebateDatasetBuilder(RLDatasetBuilder):
     dataset_name_field: str | None = "dataset_name"
     max_questions: int = 1000
     test_question_frac: float = 0.1
-    opponent_model_name: str | None = None
     grader: Literal["sympy", "math_verify"] = "sympy"
     format_coef: float = 0.1
     grade_timeout: float = 1.0
     eval_mode: Literal["direct", "debate", "both"] = "debate"
 
-    def _load_problems_from_file(self) -> list[VerifiableMathProblem]:
-        import json
-
-        problems: list[VerifiableMathProblem] = []
-        with open(self.dataset_path, "r", encoding="utf-8") as f:
-            for i, line in enumerate(f):
-                if i >= self.max_questions:
-                    break
-                data = json.loads(line)
-                if self.problem_field not in data or self.answer_field not in data:
-                    raise ValueError(
-                        f"Each JSONL row must include '{self.problem_field}' and '{self.answer_field}'. "
-                        f"Got keys={list(data.keys())}"
-                    )
-                dataset_name = "math"
-                if self.dataset_name_field is not None and self.dataset_name_field in data:
-                    dataset_name = str(data[self.dataset_name_field])
-                problems.append(
-                    VerifiableMathProblem(
-                        problem=str(data[self.problem_field]),
-                        answer=str(data[self.answer_field]),
-                        dataset_name=dataset_name,
-                    )
-                )
-        if not problems:
-            raise ValueError(f"No problems loaded from {self.dataset_path}")
-        return problems
-
-    def _split_problems(
-        self, problems: list[VerifiableMathProblem]
-    ) -> tuple[list[VerifiableMathProblem], list[VerifiableMathProblem]]:
-        if self.num_test_datapoints <= 0 or self.test_question_frac <= 0:
-            return problems, []
-        if len(problems) < 2:
-            return problems, []
-
-        rng = random.Random(42)
-        shuffled = list(problems)
-        rng.shuffle(shuffled)
-        test_n = int(round(len(shuffled) * self.test_question_frac))
-        test_n = max(1, min(test_n, len(shuffled) - 1))
-        return shuffled[test_n:], shuffled[:test_n]
-
     async def __call__(
         self,
     ) -> tuple[VerifiableMathDebateDataset, VerifiableMathDebateDataset | None]:
         renderer = get_renderer(self.renderer_name, get_tokenizer(self.model_name))
-        problems = self._load_problems_from_file()
-        train_problems, test_problems = self._split_problems(problems)
+        problems = load_math_problems_from_jsonl(
+            path=self.dataset_path,
+            problem_field=self.problem_field,
+            answer_field=self.answer_field,
+            dataset_name_field=self.dataset_name_field,
+            max_count=self.max_questions,
+        )
+        train_problems, test_problems = split_items(
+            items=problems,
+            test_frac=self.test_question_frac,
+            num_test_items=self.num_test_datapoints,
+            seed=42,
+        )
 
         train_dataset = VerifiableMathDebateDataset(
             batch_size=self.batch_size,

@@ -69,20 +69,58 @@ python3 -m tinker_cookbook.recipes.multi_agent_debate.train \
     wandb_name="multi-agent-debate-longwriter-6k"
 
 
+
+#!/bin/bash
+# Quick test script for multi-agent debate environments
+# Tests both non-verifiable and verifiable environments with minimal setup
+
+set -e  # Exit on error
+
+echo "========================================"
+echo "Testing Non-Verifiable Environment"
+echo "========================================"
 python -m tinker_cookbook.recipes.multi_agent_debate.train \
+    env="non-verifiable" \
     batch_size=1 \
     num_train_datapoints=1 \
-    num_test_datapoints=1 \
-    eval_every=1 \
-    save_every=0 \
+    num_test_datapoints=0 \
+    eval_every=0 \
     num_groups_to_log=1 \
-    max_rounds=2 \
+    max_rounds=3 \
     num_agents=3 \
     model_name="Qwen/Qwen3-8B" \
     log_full_transcript=True \
-    dataset_path=tinker_cookbook/data/longwriter_6k_sample.jsonl \
-    dataset_field="query" \
+    non_verifiable_dataset_path=tinker_cookbook/data/longwriter_6k_sample.jsonl \
+    non_verifiable_dataset_field="query" \
+    max_tokens=4096 \
+    wandb_project=""
+
+echo ""
+echo "========================================"
+echo "Testing Verifiable Environment"
+echo "========================================"
+python -m tinker_cookbook.recipes.multi_agent_debate.train \
+    env="verifiable" \
+    batch_size=16 \
+    num_train_datapoints=10 \
+    num_test_datapoints=4 \
+    eval_every=2 \
+    num_groups_to_log=10 \
+    max_rounds=3 \
+    num_agents=3 \
+    model_name="Qwen/Qwen3-8B" \
+    log_full_transcript=True \
+    verifiable_dataset_path=tinker_cookbook/data/aime2024_sample.jsonl \
+    verifiable_problem_field="query" \
+    verifiable_answer_field="answer" \
+    verifiable_grader="sympy" \
+    verifiable_eval_mode="direct" \
+    async_config.max_steps_off_policy=3 \
+    async_config.groups_per_batch=16 \
     max_tokens=8196 \
-    reward_mode="win_minus_loss" \
-    summarize_history=False \
-    history_rounds=2 
+    wandb_project=""
+
+echo ""
+echo "========================================"
+echo "All tests completed successfully!"
+echo "========================================"
