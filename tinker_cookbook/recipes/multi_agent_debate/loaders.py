@@ -1,7 +1,6 @@
 """File loading utilities for multi-agent debate datasets."""
 
 import json
-import random
 from pathlib import Path
 from typing import TYPE_CHECKING, TypeVar
 
@@ -32,7 +31,7 @@ def load_questions_from_jsonl(
     questions: list[str] = []
     with open(path, "r", encoding="utf-8") as f:
         for i, line in enumerate(f):
-            if i >= max_count:
+            if i >= max_count and max_count > 0:
                 break
             data = json.loads(line)
             if field not in data:
@@ -81,7 +80,7 @@ def load_math_problems_from_jsonl(
                 )
             # Infer dataset_name from filename
             # (e.g., "aime2024_sample.jsonl" -> "aime2024")
-            dataset_name = Path(path).stem.split('_sample')[0]
+            dataset_name = Path(path).stem.split("_sample")[0]
             if not dataset_name:
                 dataset_name = Path(path).stem  # Use full stem if no _sample
             problems.append(
@@ -94,33 +93,3 @@ def load_math_problems_from_jsonl(
     if not problems:
         raise ValueError(f"No problems loaded from {path}")
     return problems
-
-
-def split_items(
-    items: list[T],
-    test_frac: float,
-    num_test_items: int = 0,
-    seed: int = 42,
-) -> tuple[list[T], list[T]]:
-    """Split items into disjoint train/test sets.
-
-    Args:
-        items: List of items to split
-        test_frac: Fraction of items to use for testing
-        num_test_items: Number of test items (if 0, no split)
-        seed: Random seed for shuffling
-
-    Returns:
-        Tuple of (train_items, test_items)
-    """
-    if num_test_items <= 0 or test_frac <= 0:
-        return items, []
-    if len(items) < 2:
-        return items, []
-
-    rng = random.Random(seed)
-    shuffled = list(items)
-    rng.shuffle(shuffled)
-    test_n = int(round(len(shuffled) * test_frac))
-    test_n = max(1, min(test_n, len(shuffled) - 1))
-    return shuffled[test_n:], shuffled[:test_n]

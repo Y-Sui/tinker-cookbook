@@ -218,7 +218,6 @@ class VerifiableMultiAgentEnvGroupBuilder(BaseMultiAgentEnvGroupBuilder):
     log_full_transcript: bool = False
     model_name: str | None = None
     grader: Literal["sympy", "math_verify"] = "sympy"
-    format_coef: float = 0.1
     grade_timeout: float = 1.0
     eval_mode: Literal["direct", "debate", "both"] = "debate"
     is_training: bool = True  # training or evaluation mode
@@ -260,15 +259,16 @@ class VerifiableMultiAgentEnvGroupBuilder(BaseMultiAgentEnvGroupBuilder):
     ) -> Metrics:
         """Compute correctness metrics for evaluation (no rewards)."""
         # Check if solution is valid (not incomplete or parse error)
-        is_valid_format = (
-            not solution_text.startswith("[INCOMPLETE]")
-            and not solution_text.startswith("[PARSE_ERROR")
-        )
+        is_valid_format = not solution_text.startswith(
+            "[INCOMPLETE]"
+        ) and not solution_text.startswith("[PARSE_ERROR")
 
         has_box, boxed = _extract_boxed_from_solution(solution_text)
         correct = False
         if boxed is not None:
-            correct = safe_grade(boxed, ground_truth, grader=self.grader, timeout=self.grade_timeout)
+            correct = safe_grade(
+                boxed, ground_truth, grader=self.grader, timeout=self.grade_timeout
+            )
 
         return {
             "agent_id": float(agent_id),
@@ -277,7 +277,10 @@ class VerifiableMultiAgentEnvGroupBuilder(BaseMultiAgentEnvGroupBuilder):
         }
 
     def _compute_training_rewards(
-        self, trajectory_group: list[Trajectory], env_group: Sequence[Env], problem: VerifiableMathProblem
+        self,
+        trajectory_group: list[Trajectory],
+        env_group: Sequence[Env],
+        problem: VerifiableMathProblem,
     ) -> list[tuple[float, Metrics]]:
         """Compute rewards and metrics for training mode."""
         env0 = env_group[0]
@@ -303,7 +306,8 @@ class VerifiableMultiAgentEnvGroupBuilder(BaseMultiAgentEnvGroupBuilder):
             # Format: fraction of responses that have valid ParsedResponse
             if agent_responses:
                 valid_responses = sum(
-                    1 for resp in agent_responses
+                    1
+                    for resp in agent_responses
                     if not resp.solution.startswith("[INCOMPLETE]")
                     and not resp.solution.startswith("[PARSE_ERROR")
                 )
@@ -312,7 +316,9 @@ class VerifiableMultiAgentEnvGroupBuilder(BaseMultiAgentEnvGroupBuilder):
                 format_fraction = 0.0
 
             # Correctness: check the latest response only
-            latest = _latest_response_by_author(coordinator.state.agent_responses, author_id=agent_id)
+            latest = _latest_response_by_author(
+                coordinator.state.agent_responses, author_id=agent_id
+            )
             correct = False
             if latest is not None:
                 has_box, boxed = _extract_boxed_from_solution(latest.solution)
@@ -321,10 +327,12 @@ class VerifiableMultiAgentEnvGroupBuilder(BaseMultiAgentEnvGroupBuilder):
                         boxed, problem.answer, grader=self.grader, timeout=self.grade_timeout
                     )
 
-            accuracy_metrics.append({
-                "train_format": format_fraction,
-                "train_correct": 1.0 if correct else 0.0,
-            })
+            accuracy_metrics.append(
+                {
+                    "train_format": format_fraction,
+                    "train_correct": 1.0 if correct else 0.0,
+                }
+            )
 
         # Compute pass@k: did any agent get it correct?
         any_correct = any(m["train_correct"] > 0.5 for m in accuracy_metrics)
@@ -371,7 +379,10 @@ class VerifiableMultiAgentEnvGroupBuilder(BaseMultiAgentEnvGroupBuilder):
         return [(0.0, metrics)]
 
     def _compute_debate_eval(
-        self, trajectory_group: list[Trajectory], env_group: Sequence[Env], problem: VerifiableMathProblem
+        self,
+        trajectory_group: list[Trajectory],
+        env_group: Sequence[Env],
+        problem: VerifiableMathProblem,
     ) -> list[tuple[float, Metrics]]:
         """Compute metrics for debate evaluation mode (multi-turn)."""
         env0 = env_group[0]
@@ -385,14 +396,18 @@ class VerifiableMultiAgentEnvGroupBuilder(BaseMultiAgentEnvGroupBuilder):
         agent_solutions_for_logging: list[tuple[int, str | None, str, dict[str, float]]] = []
 
         for agent_id in range(self.num_agents):
-            latest = _latest_response_by_author(coordinator.state.agent_responses, author_id=agent_id)
+            latest = _latest_response_by_author(
+                coordinator.state.agent_responses, author_id=agent_id
+            )
 
             if latest is None:
                 metrics = {"agent_id": float(agent_id), "format": 0.0, "correct": 0.0}
                 if self.log_full_transcript:
                     agent_solutions_for_logging.append((agent_id, None, "(No response)", metrics))
             else:
-                metrics = self._compute_eval_correctness_metrics(latest.solution, problem.answer, agent_id)
+                metrics = self._compute_eval_correctness_metrics(
+                    latest.solution, problem.answer, agent_id
+                )
                 if self.log_full_transcript:
                     _, boxed = _extract_boxed_from_solution(latest.solution)
                     parsed_answer = boxed if boxed is not None else "(No boxed answer found)"
@@ -444,7 +459,6 @@ class VerifiableMathDebateDataset(RLDataset):
         num_datapoints: int,
         model_name: str,
         grader: Literal["sympy", "math_verify"] = "sympy",
-        format_coef: float = 0.1,
         grade_timeout: float = 1.0,
         eval_mode: Literal["direct", "debate", "both"] = "debate",
         is_training: bool = True,
@@ -462,7 +476,6 @@ class VerifiableMathDebateDataset(RLDataset):
         self.num_datapoints = num_datapoints
         self.model_name = model_name
         self.grader = grader
-        self.format_coef = format_coef
         self.grade_timeout = grade_timeout
         self.eval_mode = eval_mode
         self.is_training = is_training
@@ -485,7 +498,6 @@ class VerifiableMathDebateDataset(RLDataset):
                 max_rounds=self.max_rounds,
                 model_name=self.model_name,
                 grader=self.grader,
-                format_coef=self.format_coef,
                 grade_timeout=self.grade_timeout,
                 eval_mode=self.eval_mode,
                 is_training=self.is_training,
@@ -514,7 +526,6 @@ class VerifiableMathDebateDatasetBuilder(RLDatasetBuilder):
     answer_field: str = "answer"
     max_questions: int = -1  # No limit by default
     grader: Literal["sympy", "math_verify"] = "sympy"
-    format_coef: float = 0.1
     grade_timeout: float = 2.0  # Increased timeout for safety
 
     async def __call__(
@@ -551,7 +562,6 @@ class VerifiableMathDebateDatasetBuilder(RLDatasetBuilder):
             num_datapoints=self.num_train_datapoints,
             model_name=self.model_name,
             grader=self.grader,
-            format_coef=self.format_coef,
             grade_timeout=self.grade_timeout,
             eval_mode="debate",  # Training always uses debate mode
             is_training=True,  # Training dataset computes step-wise rewards

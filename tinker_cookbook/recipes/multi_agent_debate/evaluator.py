@@ -5,12 +5,13 @@ from collections import defaultdict
 from typing import Literal
 
 import tinker
+
 from tinker_cookbook.completers import TinkerTokenCompleter
 from tinker_cookbook.eval.evaluators import SamplingClientEvaluator
 from tinker_cookbook.rl.rollouts import do_group_rollout
 from tinker_cookbook.utils import logtree
 
-from .verifiable_env import VerifiableMultiAgentEnvGroupBuilder, VerifiableMathProblem
+from .verifiable_env import VerifiableMathProblem, VerifiableMultiAgentEnvGroupBuilder
 
 
 class MultiAgentDebateEvaluator(SamplingClientEvaluator):
@@ -28,7 +29,6 @@ class MultiAgentDebateEvaluator(SamplingClientEvaluator):
         log_full_transcript: bool,
         model_name: str,
         grader: Literal["sympy", "math_verify"] = "sympy",
-        format_coef: float = 0.1,
         grade_timeout: float = 2.0,
         max_tokens: int = 8196,
         num_groups_to_log: int = 4,
@@ -43,7 +43,6 @@ class MultiAgentDebateEvaluator(SamplingClientEvaluator):
         self.log_full_transcript = log_full_transcript
         self.model_name = model_name
         self.grader = grader
-        self.format_coef = format_coef
         self.grade_timeout = grade_timeout
         self.max_tokens = max_tokens
         self.num_groups_to_log = num_groups_to_log
@@ -78,7 +77,6 @@ class MultiAgentDebateEvaluator(SamplingClientEvaluator):
                 max_rounds=1,
                 model_name=self.model_name,
                 grader=self.grader,
-                format_coef=self.format_coef,
                 grade_timeout=self.grade_timeout,
                 eval_mode="direct",
                 is_training=False,
@@ -108,7 +106,6 @@ class MultiAgentDebateEvaluator(SamplingClientEvaluator):
                 max_rounds=self.max_rounds,
                 model_name=self.model_name,
                 grader=self.grader,
-                format_coef=self.format_coef,
                 grade_timeout=self.grade_timeout,
                 eval_mode="debate",
                 is_training=False,
@@ -139,12 +136,14 @@ class MultiAgentDebateEvaluator(SamplingClientEvaluator):
 
             # Extract metrics from each trajectory in the group
             for traj_idx, metrics in enumerate(traj_group.metrics_G):
-                dataset_to_metrics[dataset_name].append({
-                    "problem_idx": i,
-                    "agent_id": metrics.get("agent_id", traj_idx),
-                    "format": metrics.get("format", 0.0),
-                    "correct": metrics.get("correct", 0.0),
-                })
+                dataset_to_metrics[dataset_name].append(
+                    {
+                        "problem_idx": i,
+                        "agent_id": metrics.get("agent_id", traj_idx),
+                        "format": metrics.get("format", 0.0),
+                        "correct": metrics.get("correct", 0.0),
+                    }
+                )
 
         # Compute aggregated metrics
         all_metrics = {}
@@ -172,14 +171,17 @@ class MultiAgentDebateEvaluator(SamplingClientEvaluator):
                 # Compute pass@k: at least one agent got it right
                 if problem_to_agents:
                     pass_at_k = sum(
-                        1 for agent_corrects in problem_to_agents.values()
+                        1
+                        for agent_corrects in problem_to_agents.values()
                         if any(c > 0.5 for c in agent_corrects)
                     ) / len(problem_to_agents)
 
                     all_metrics[f"{dataset_name}/pass@{self.num_agents}"] = pass_at_k
 
         # Overall metrics (across all datasets)
-        all_problem_metrics = [m for metrics_list in dataset_to_metrics.values() for m in metrics_list]
+        all_problem_metrics = [
+            m for metrics_list in dataset_to_metrics.values() for m in metrics_list
+        ]
         if all_problem_metrics:
             overall_metrics = {}
             for key in ["format", "correct"]:
@@ -197,7 +199,8 @@ class MultiAgentDebateEvaluator(SamplingClientEvaluator):
 
                 if problem_to_agents_overall:
                     pass_at_k_overall = sum(
-                        1 for agent_corrects in problem_to_agents_overall.values()
+                        1
+                        for agent_corrects in problem_to_agents_overall.values()
                         if any(c > 0.5 for c in agent_corrects)
                     ) / len(problem_to_agents_overall)
 
