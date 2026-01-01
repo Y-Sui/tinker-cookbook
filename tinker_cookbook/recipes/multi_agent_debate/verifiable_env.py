@@ -255,131 +255,175 @@ class VerifiableMultiAgentEnvGroupBuilder(BaseMultiAgentEnvGroupBuilder):
             for i in range(self.num_agents)
         ]
 
+    def _compute_eval_correctness_metrics(
+        self, solution_text: str, ground_truth: str, agent_id: int
+    ) -> Metrics:
+        """Compute correctness metrics for evaluation (no rewards)."""
+        # Check if solution is valid (not incomplete or parse error)
+        is_valid_format = (
+            not solution_text.startswith("[INCOMPLETE]")
+            and not solution_text.startswith("[PARSE_ERROR")
+        )
+
+        has_box, boxed = _extract_boxed_from_solution(solution_text)
+        correct = False
+        if boxed is not None:
+            correct = safe_grade(boxed, ground_truth, grader=self.grader, timeout=self.grade_timeout)
+
+        return {
+            "agent_id": float(agent_id),
+            "format": 1.0 if (is_valid_format and has_box) else 0.0,
+            "correct": 1.0 if correct else 0.0,
+        }
+
+    def _compute_training_rewards(
+        self, trajectory_group: list[Trajectory], env_group: Sequence[Env], problem: VerifiableMathProblem
+    ) -> list[tuple[float, Metrics]]:
+        """Compute rewards and metrics for training mode."""
+        env0 = env_group[0]
+        assert isinstance(env0, VerifiableMultiAgentDebateEnv)
+        coordinator = env0.coordinator
+
+        if self.log_full_transcript:
+            log_debate_transcript(coordinator)
+
+        # Populate step-wise rewards in trajectories
+        stepwise_metrics = self._populate_stepwise_rewards(trajectory_group, env_group)
+
+        # Compute accuracy metrics for monitoring (NOT used as rewards)
+        dataset_name = problem.dataset_name
+        accuracy_metrics = []
+
+        for agent_id in range(self.num_agents):
+            # Get ALL responses from this agent to compute format accuracy
+            agent_responses = [
+                resp for resp in coordinator.state.agent_responses if resp.author_id == agent_id
+            ]
+
+            # Format: fraction of responses that have valid ParsedResponse
+            if agent_responses:
+                valid_responses = sum(
+                    1 for resp in agent_responses
+                    if not resp.solution.startswith("[INCOMPLETE]")
+                    and not resp.solution.startswith("[PARSE_ERROR")
+                )
+                format_fraction = valid_responses / len(agent_responses)
+            else:
+                format_fraction = 0.0
+
+            # Correctness: check the latest response only
+            latest = _latest_response_by_author(coordinator.state.agent_responses, author_id=agent_id)
+            correct = False
+            if latest is not None:
+                has_box, boxed = _extract_boxed_from_solution(latest.solution)
+                if boxed is not None:
+                    correct = safe_grade(
+                        boxed, problem.answer, grader=self.grader, timeout=self.grade_timeout
+                    )
+
+            accuracy_metrics.append({
+                "train_format": format_fraction,
+                "train_correct": 1.0 if correct else 0.0,
+            })
+
+        # Compute pass@k: did any agent get it correct?
+        any_correct = any(m["train_correct"] > 0.5 for m in accuracy_metrics)
+
+        # Return metrics for each agent
+        return [
+            (
+                0.0,  # No final reward (all rewards are already in trajectory steps)
+                {
+                    "agent_id": agent_id,
+                    **stepwise_metrics,
+                    **accuracy_metrics[agent_id],
+                    f"train_{dataset_name}/format": accuracy_metrics[agent_id]["train_format"],
+                    f"train_{dataset_name}/correct": accuracy_metrics[agent_id]["train_correct"],
+                    f"train_{dataset_name}/pass@{self.num_agents}": 1.0 if any_correct else 0.0,
+                },
+            )
+            for agent_id in range(self.num_agents)
+        ]
+
+    def _compute_direct_eval(
+        self, trajectory_group: list[Trajectory], problem: VerifiableMathProblem
+    ) -> list[tuple[float, Metrics]]:
+        """Compute metrics for direct evaluation mode (single-turn)."""
+        trajectory = trajectory_group[0]
+        if not trajectory.transitions:
+            return [(0.0, {"agent_id": 0.0, "format": 0.0, "correct": 0.0})]
+
+        action_tokens = trajectory.transitions[0].ac.tokens
+        response_text = self.renderer.parse_response(action_tokens)[0]["content"]
+        metrics = self._compute_eval_correctness_metrics(response_text, problem.answer, agent_id=0)
+
+        # Log direct evaluation details
+        if self.log_full_transcript:
+            _, boxed = _extract_boxed_from_solution(response_text)
+            parsed_solution = boxed if boxed is not None else "(No boxed answer found)"
+            log_direct_evaluation(
+                problem=problem.problem,
+                response_text=response_text,
+                parsed_solution=parsed_solution,
+                metrics=metrics,
+            )
+
+        return [(0.0, metrics)]
+
+    def _compute_debate_eval(
+        self, trajectory_group: list[Trajectory], env_group: Sequence[Env], problem: VerifiableMathProblem
+    ) -> list[tuple[float, Metrics]]:
+        """Compute metrics for debate evaluation mode (multi-turn)."""
+        env0 = env_group[0]
+        assert isinstance(env0, VerifiableMultiAgentDebateEnv)
+        coordinator = env0.coordinator
+
+        if self.log_full_transcript:
+            log_debate_transcript(coordinator)
+
+        results: list[tuple[float, Metrics]] = []
+        agent_solutions_for_logging: list[tuple[int, str | None, str, dict[str, float]]] = []
+
+        for agent_id in range(self.num_agents):
+            latest = _latest_response_by_author(coordinator.state.agent_responses, author_id=agent_id)
+
+            if latest is None:
+                metrics = {"agent_id": float(agent_id), "format": 0.0, "correct": 0.0}
+                if self.log_full_transcript:
+                    agent_solutions_for_logging.append((agent_id, None, "(No response)", metrics))
+            else:
+                metrics = self._compute_eval_correctness_metrics(latest.solution, problem.answer, agent_id)
+                if self.log_full_transcript:
+                    _, boxed = _extract_boxed_from_solution(latest.solution)
+                    parsed_answer = boxed if boxed is not None else "(No boxed answer found)"
+                    agent_solutions_for_logging.append(
+                        (agent_id, latest.solution, parsed_answer, metrics)
+                    )
+
+            results.append((0.0, metrics))
+
+        if self.log_full_transcript:
+            log_debate_evaluation_final_solutions(agent_solutions_for_logging)
+
+        return results
+
     async def compute_group_rewards(
         self, trajectory_group: list[Trajectory], env_group: Sequence[Env]
     ) -> list[tuple[float, Metrics]]:
         assert env_group, "empty env_group"
-
         problem = self.problems[self.problem_index % len(self.problems)]
-        ground_truth = problem.answer
 
-        # Training mode: Use pairwise step-wise rewards
+        # Training mode: Use pairwise step-wise rewards + track accuracy metrics
         if self.is_training:
-            env0 = env_group[0]
-            assert isinstance(env0, VerifiableMultiAgentDebateEnv)
-            coordinator = env0.coordinator
+            return self._compute_training_rewards(trajectory_group, env_group, problem)
 
-            if self.log_full_transcript:
-                log_debate_transcript(coordinator)
-
-            # Populate step-wise rewards in trajectories
-            stepwise_metrics = self._populate_stepwise_rewards(trajectory_group, env_group)
-
-            return [
-                (
-                    0.0,  # No final reward (all rewards are in steps)
-                    {
-                        "agent_id": agent_id,
-                        **stepwise_metrics,
-                    },
-                )
-                for agent_id in range(self.num_agents)
-            ]
-
-        # Evaluation modes: no rewards, only metrics
-        # Helper function for correctness metrics (no rewards)
-        def compute_correctness_metrics(solution_text: str, agent_id: int) -> Metrics:
-            has_box, boxed = _extract_boxed_from_solution(solution_text)
-            correct = False
-            if boxed is not None:
-                correct = safe_grade(
-                    boxed, ground_truth, grader=self.grader, timeout=self.grade_timeout
-                )
-
-            return {
-                "agent_id": float(agent_id),
-                "format": 1.0 if has_box else 0.0,
-                "correct": 1.0 if correct else 0.0,
-            }
-
-        # Evaluation modes: no rewards, only metrics
         # Direct evaluation: single-turn correctness metrics
-        if self.eval_mode == "direct" and not self.is_training:
-            trajectory = trajectory_group[0]
-            if not trajectory.transitions:
-                return [
-                    (
-                        0.0,
-                        {
-                            "agent_id": 0.0,
-                            "format": 0.0,
-                            "correct": 0.0,
-                            "missing_response": 1.0,
-                        },
-                    )
-                ]
-
-            action_tokens = trajectory.transitions[0].ac.tokens
-            response_text = self.renderer.parse_response(action_tokens)[0]["content"]
-
-            metrics = compute_correctness_metrics(response_text, agent_id=0)
-
-            # Log direct evaluation details
-            if self.log_full_transcript:
-                _, boxed = _extract_boxed_from_solution(response_text)
-                parsed_solution = boxed if boxed is not None else "(No boxed answer found)"
-                log_direct_evaluation(
-                    problem=problem.problem,
-                    response_text=response_text,
-                    parsed_solution=parsed_solution,
-                    metrics=metrics,
-                )
-
-            return [(0.0, metrics)]  # No reward, only metrics
+        if self.eval_mode == "direct":
+            return self._compute_direct_eval(trajectory_group, problem)
 
         # Debate evaluation: multi-turn self-play, check all agents' final answers
-        if self.eval_mode == "debate" and not self.is_training:
-            env0 = env_group[0]
-            assert isinstance(env0, VerifiableMultiAgentDebateEnv)
-            coordinator = env0.coordinator
-
-            if self.log_full_transcript:
-                log_debate_transcript(coordinator)
-
-            results: list[tuple[float, Metrics]] = []
-            agent_solutions_for_logging: list[tuple[int, str | None, str, dict[str, float]]] = []
-
-            for agent_id in range(self.num_agents):
-                latest = _latest_response_by_author(
-                    coordinator.state.agent_responses, author_id=agent_id
-                )
-
-                if latest is None:
-                    metrics = {
-                        "agent_id": float(agent_id),
-                        "format": 0.0,
-                        "correct": 0.0,
-                        "missing_response": 1.0,
-                    }
-                    if self.log_full_transcript:
-                        agent_solutions_for_logging.append(
-                            (agent_id, None, "(No response)", metrics)
-                        )
-                else:
-                    metrics = compute_correctness_metrics(latest.solution, agent_id)
-                    if self.log_full_transcript:
-                        _, boxed = _extract_boxed_from_solution(latest.solution)
-                        parsed_answer = boxed if boxed is not None else "(No boxed answer found)"
-                        agent_solutions_for_logging.append(
-                            (agent_id, latest.solution, parsed_answer, metrics)
-                        )
-
-                results.append((0.0, metrics))  # No reward, only metrics
-
-            if self.log_full_transcript:
-                log_debate_evaluation_final_solutions(agent_solutions_for_logging)
-
-            return results
+        if self.eval_mode == "debate":
+            return self._compute_debate_eval(trajectory_group, env_group, problem)
 
         raise ValueError(f"Invalid eval_mode: {self.eval_mode}")
 
@@ -457,7 +501,6 @@ class VerifiableMathDebateDataset(RLDataset):
 class VerifiableMathDebateDatasetBuilder(RLDatasetBuilder):
     batch_size: int
     num_train_datapoints: int
-    num_test_datapoints: int
     num_agents: int = 3
     max_rounds: int = 3
     history_rounds: int = 2
@@ -472,23 +515,31 @@ class VerifiableMathDebateDatasetBuilder(RLDatasetBuilder):
     max_questions: int = -1  # No limit by default
     grader: Literal["sympy", "math_verify"] = "sympy"
     format_coef: float = 0.1
-    grade_timeout: float = 1.0
-    eval_mode: Literal["direct", "debate", "both"] = "debate"
+    grade_timeout: float = 2.0  # Increased timeout for safety
 
     async def __call__(
         self,
     ) -> tuple[VerifiableMathDebateDataset, VerifiableMathDebateDataset | None]:
+        """Build training dataset for online TTL.
+
+        Loads ALL problems from dataset_path and creates a training dataset that samples
+        num_train_datapoints per epoch. For online test-time learning, evaluation is
+        handled separately by a custom evaluator that uses the same problem set.
+        """
         renderer = get_renderer(self.renderer_name, get_tokenizer(self.model_name))
-        train_problems = load_math_problems_from_jsonl(
+
+        # Load ALL problems from dataset (no train/test split for online TTL)
+        all_problems = load_math_problems_from_jsonl(
             path=self.dataset_path,
             problem_field=self.problem_field,
             answer_field=self.answer_field,
             max_count=self.max_questions,
         )
 
+        # Training dataset: samples num_train_datapoints from all problems
         train_dataset = VerifiableMathDebateDataset(
             batch_size=self.batch_size,
-            problems=train_problems,
+            problems=all_problems,
             num_agents=self.num_agents,
             renderer=renderer,
             self_play=True,
@@ -506,33 +557,5 @@ class VerifiableMathDebateDatasetBuilder(RLDatasetBuilder):
             is_training=True,  # Training dataset computes step-wise rewards
         )
 
-        if self.num_test_datapoints > 0:
-            test_problems = load_math_problems_from_jsonl(
-                path=self.test_dataset_path,
-                problem_field=self.problem_field,
-                answer_field=self.answer_field,
-                max_count=-1,
-            )
-            test_dataset = VerifiableMathDebateDataset(
-                batch_size=min(self.num_test_datapoints, self.batch_size),
-                problems=test_problems,
-                num_agents=self.num_agents,
-                renderer=renderer,
-                self_play=True,  # Evaluation also uses self-play (no fixed opponents)
-                history_turns=self.history_rounds,
-                summarize_history=self.summarize_history,
-                summarize_model=self.summarize_model,
-                log_full_transcript=self.log_full_transcript,
-                max_rounds=self.max_rounds,
-                num_datapoints=self.num_test_datapoints,
-                model_name=self.model_name,
-                grader=self.grader,
-                format_coef=self.format_coef,
-                grade_timeout=self.grade_timeout,
-                eval_mode=self.eval_mode,  # Uses builder's eval_mode (configurable)
-                is_training=False,  # Test dataset only computes metrics (no rewards)
-            )
-        else:
-            test_dataset = None
-
-        return train_dataset, test_dataset
+        # No separate test dataset - evaluation handled by custom evaluator
+        return train_dataset, None

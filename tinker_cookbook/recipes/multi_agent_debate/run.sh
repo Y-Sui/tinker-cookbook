@@ -83,7 +83,6 @@ python -m tinker_cookbook.recipes.multi_agent_debate.train \
     env="non-verifiable" \
     batch_size=1 \
     num_train_datapoints=1 \
-    num_test_datapoints=0 \
     eval_every=0 \
     num_groups_to_log=1 \
     max_rounds=3 \
@@ -104,7 +103,6 @@ python -m tinker_cookbook.recipes.multi_agent_debate.train \
     env="verifiable" \
     batch_size=4 \
     num_train_datapoints=8 \
-    num_test_datapoints=4 \
     eval_every=2 \
     num_groups_to_log=4 \
     max_rounds=3 \
@@ -115,7 +113,6 @@ python -m tinker_cookbook.recipes.multi_agent_debate.train \
     verifiable_problem_field="query" \
     verifiable_answer_field="answer" \
     verifiable_grader="sympy" \
-    verifiable_eval_mode="direct" \
     max_tokens=8196 \
     wandb_project="CANT"
 

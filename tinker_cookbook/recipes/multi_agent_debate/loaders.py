@@ -2,6 +2,7 @@
 
 import json
 import random
+from pathlib import Path
 from typing import TYPE_CHECKING, TypeVar
 
 if TYPE_CHECKING:
@@ -48,7 +49,6 @@ def load_math_problems_from_jsonl(
     path: str,
     problem_field: str,
     answer_field: str,
-    dataset_name_field: str | None = None,
     max_count: int = 1000,
 ) -> list["VerifiableMathProblem"]:
     """Load verifiable math problems from JSONL file.
@@ -57,7 +57,6 @@ def load_math_problems_from_jsonl(
         path: Path to JSONL file
         problem_field: Field name containing the problem text
         answer_field: Field name containing the answer
-        dataset_name_field: Optional field name for dataset identifier
         max_count: Maximum number of problems to load
 
     Returns:
@@ -80,7 +79,11 @@ def load_math_problems_from_jsonl(
                     f"Each JSONL row must include '{problem_field}' and '{answer_field}'. "
                     f"Got keys={list(data.keys())}"
                 )
-            dataset_name = "math" if dataset_name_field is None else dataset_name_field
+            # Infer dataset_name from filename
+            # (e.g., "aime2024_sample.jsonl" -> "aime2024")
+            dataset_name = Path(path).stem.split('_sample')[0]
+            if not dataset_name:
+                dataset_name = Path(path).stem  # Use full stem if no _sample
             problems.append(
                 VerifiableMathProblem(
                     problem=str(data[problem_field]),

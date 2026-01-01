@@ -277,14 +277,11 @@ class BaseMultiAgentEnvGroupBuilder(EnvGroupBuilder, ABC):
 
         # Compute summary metrics
         total_comparisons_used = 0
-        total_rewards_assigned = 0
         for trajectory in trajectory_group:
             for transition in trajectory.transitions:
                 if transition.reward != 0.0:
-                    total_rewards_assigned += 1
                     total_comparisons_used += abs(transition.reward)
 
         return {
             "stepwise_comparisons_used": total_comparisons_used,
-            "stepwise_rewards_assigned": total_rewards_assigned,
         }
