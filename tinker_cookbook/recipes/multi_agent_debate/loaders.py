@@ -72,7 +72,7 @@ def load_math_problems_from_jsonl(
     problems: list[VerifiableMathProblem] = []
     with open(path, "r", encoding="utf-8") as f:
         for i, line in enumerate(f):
-            if i >= max_count:
+            if i >= max_count and max_count > 0:
                 break
             data = json.loads(line)
             if problem_field not in data or answer_field not in data:

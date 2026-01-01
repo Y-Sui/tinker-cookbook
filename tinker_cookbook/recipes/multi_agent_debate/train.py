@@ -39,13 +39,10 @@ class CLIConfig:
     summarize_model: str | None = "Qwen/Qwen3-4B-Instruct-2507"
     num_groups_to_log: int = 4  # 0 disables logtree; >=batch_size logs all groups
     log_full_transcript: bool = False  # include full per-group transcript in logtree
-    # Question splitting for eval. Set test_question_frac=0 to disable the split.
-    test_question_frac: float = 0.1
 
     # Non-verifiable prompt source (local JSONL by default; avoids network).
     non_verifiable_dataset_path: str = "tinker_cookbook/data/longwriter_6k_sample.jsonl"
-    non_verifiable_dataset_field: str = "query"
-
+    non_verifiable_problem_field: str = "query"
     # Verifiable (math-style) prompt source (local JSONL by default; avoids network).
     verifiable_dataset_path: str = "tinker_cookbook/data/aime2024_sample.jsonl"
     verifiable_problem_field: str = "problem"
@@ -53,7 +50,7 @@ class CLIConfig:
     verifiable_grader: Literal["sympy", "math_verify"] = "sympy"
     verifiable_eval_mode: Literal["direct", "debate", "both"] = "debate"
 
-    max_questions: int = 1000
+    max_questions: int = -1  # Maximum number of questions to load; -1 means no limit.
     wandb_project: str | None = None
     wandb_name: str | None = None
     log_path: str | None = None
@@ -103,7 +100,6 @@ def build_config(cli_config: CLIConfig) -> train.Config:
             dataset_path=cli_config.verifiable_dataset_path,
             problem_field=cli_config.verifiable_problem_field,
             answer_field=cli_config.verifiable_answer_field,
-            test_question_frac=cli_config.test_question_frac,
             grader=cli_config.verifiable_grader,
             eval_mode=cli_config.verifiable_eval_mode,
         )
@@ -122,8 +118,7 @@ def build_config(cli_config: CLIConfig) -> train.Config:
             model_name=model_name,
             renderer_name=renderer_name,
             dataset_path=cli_config.non_verifiable_dataset_path,
-            dataset_field=cli_config.non_verifiable_dataset_field,
-            test_question_frac=cli_config.test_question_frac,
+            problem_field=cli_config.non_verifiable_problem_field,
             max_questions=cli_config.max_questions,
         )
 

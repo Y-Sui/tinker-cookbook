@@ -93,7 +93,8 @@ python -m tinker_cookbook.recipes.multi_agent_debate.train \
     non_verifiable_dataset_path=tinker_cookbook/data/longwriter_6k_sample.jsonl \
     non_verifiable_dataset_field="query" \
     max_tokens=4096 \
-    wandb_project=""
+    wandb_project="CANT"
+
 
 echo ""
 echo "========================================"
@@ -101,11 +102,11 @@ echo "Testing Verifiable Environment"
 echo "========================================"
 python -m tinker_cookbook.recipes.multi_agent_debate.train \
     env="verifiable" \
-    batch_size=16 \
-    num_train_datapoints=10 \
+    batch_size=4 \
+    num_train_datapoints=8 \
     num_test_datapoints=4 \
     eval_every=2 \
-    num_groups_to_log=10 \
+    num_groups_to_log=4 \
     max_rounds=3 \
     num_agents=3 \
     model_name="Qwen/Qwen3-8B" \
@@ -115,10 +116,8 @@ python -m tinker_cookbook.recipes.multi_agent_debate.train \
     verifiable_answer_field="answer" \
     verifiable_grader="sympy" \
     verifiable_eval_mode="direct" \
-    async_config.max_steps_off_policy=3 \
-    async_config.groups_per_batch=16 \
     max_tokens=8196 \
-    wandb_project=""
+    wandb_project="CANT"
 
 echo ""
 echo "========================================"

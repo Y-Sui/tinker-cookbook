@@ -19,7 +19,7 @@ from tinker_cookbook.tokenizer_utils import get_tokenizer
 
 from .base_env import BaseMultiAgentDebateEnv, BaseMultiAgentEnvGroupBuilder
 from .coordinator import MultiAgentCoordinator
-from .loaders import load_questions_from_jsonl, split_items
+from .loaders import load_questions_from_jsonl
 from .prompts import AGENT_SYSTEM_PROMPT, ParsedResponse
 from .utils import get_debate_stop_condition, log_debate_transcript
 
@@ -111,6 +111,7 @@ class MultiAgentEnvGroupBuilder(BaseMultiAgentEnvGroupBuilder):
 
     async def make_envs(self) -> Sequence[Env]:
         """Create a group of environments for a multi-agent debate."""
+        # reuse the questions by cycling if num_train_datapoints > len(questions), we use max_questions to limit len(questions)
         question = self.questions[self.question_index % len(self.questions)]
         max_turns = self.num_agents * self.max_rounds
 
@@ -238,26 +239,14 @@ class MultiAgentDebateDatasetBuilder(RLDatasetBuilder):
     renderer_name: str
     # Prompt source: local JSONL by default (no network).
     dataset_path: str = "tinker_cookbook/example_data/nonverifiable_queries.jsonl"
-    dataset_field: str = "query"
-    # If enabled, split loaded questions into disjoint train/test pools.
-    test_question_frac: float = 0.1  # used only if num_test_datapoints > 0
-
-    max_questions: int = 1000
+    problem_field: str = "query"
+    max_questions: int = -1  # No limit by default
 
     def load_questions(self) -> list[str]:
         return load_questions_from_jsonl(
             path=self.dataset_path,
-            field=self.dataset_field,
+            field=self.problem_field,
             max_count=self.max_questions,
-        )
-
-    def get_question_pools(self) -> tuple[list[str], list[str]]:
-        questions = self.load_questions()
-        return split_items(
-            items=questions,
-            test_frac=self.test_question_frac,
-            num_test_items=self.num_test_datapoints,
-            seed=42,
         )
 
     async def __call__(
@@ -265,7 +254,7 @@ class MultiAgentDebateDatasetBuilder(RLDatasetBuilder):
     ) -> tuple[MultiAgentDebateDataset, MultiAgentDebateDataset | None]:
         """Build the dataset for training and testing."""
         renderer = get_renderer(self.renderer_name, get_tokenizer(self.model_name))
-        train_questions, test_questions = self.get_question_pools()
+        train_questions = self.load_questions()
 
         # Training dataset (self-play)
         train_dataset = MultiAgentDebateDataset(
@@ -283,24 +272,24 @@ class MultiAgentDebateDatasetBuilder(RLDatasetBuilder):
             model_name=self.model_name,
         )
 
-        # Test dataset (optional, also uses self-play). If num_test_datapoints is 0, disable test set entirely.
-        test_dataset: MultiAgentDebateDataset | None
-        if self.num_test_datapoints <= 0 or not test_questions:
-            test_dataset = None
-        else:
-            test_dataset = MultiAgentDebateDataset(
-                batch_size=min(self.num_test_datapoints, self.batch_size),
-                questions=test_questions,
-                num_agents=self.num_agents,
-                renderer=renderer,
-                self_play=True,
-                history_turns=self.history_rounds,
-                summarize_history=self.summarize_history,
-                summarize_model=self.summarize_model,
-                log_full_transcript=self.log_full_transcript,
-                max_rounds=self.max_rounds,
-                num_datapoints=self.num_test_datapoints,
-                model_name=self.model_name,
-            )
+        # # Test dataset (optional, also uses self-play). If num_test_datapoints is 0, disable test set entirely.
+        # test_dataset: MultiAgentDebateDataset | None
+        # if self.num_test_datapoints <= 0 or not test_questions:
+        #     test_dataset = None
+        # else:
+        #     test_dataset = MultiAgentDebateDataset(
+        #         batch_size=min(self.num_test_datapoints, self.batch_size),
+        #         questions=test_questions,
+        #         num_agents=self.num_agents,
+        #         renderer=renderer,
+        #         self_play=True,
+        #         history_turns=self.history_rounds,
+        #         summarize_history=self.summarize_history,
+        #         summarize_model=self.summarize_model,
+        #         log_full_transcript=self.log_full_transcript,
+        #         max_rounds=self.max_rounds,
+        #         num_datapoints=self.num_test_datapoints,
+        #         model_name=self.model_name,
+        #     )
 
-        return train_dataset, test_dataset
+        return train_dataset, None

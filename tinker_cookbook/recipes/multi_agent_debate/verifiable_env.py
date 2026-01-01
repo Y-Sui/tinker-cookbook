@@ -41,7 +41,7 @@ from tinker_cookbook.tokenizer_utils import get_tokenizer
 
 from .base_env import BaseMultiAgentDebateEnv, BaseMultiAgentEnvGroupBuilder
 from .coordinator import MultiAgentCoordinator
-from .loaders import load_math_problems_from_jsonl, split_items
+from .loaders import load_math_problems_from_jsonl
 from .prompts import VERIFIABLE_AGENT_SYSTEM_PROMPT, ParsedResponse
 from .utils import (
     STOP_CONDITION,
@@ -469,9 +469,7 @@ class VerifiableMathDebateDatasetBuilder(RLDatasetBuilder):
     dataset_path: str = "tinker_cookbook/example_data/verifiable_math_problems.jsonl"
     problem_field: str = "problem"
     answer_field: str = "answer"
-    dataset_name_field: str | None = "dataset_name"
-    max_questions: int = 1000
-    test_question_frac: float = 0.1
+    max_questions: int = -1  # No limit by default
     grader: Literal["sympy", "math_verify"] = "sympy"
     format_coef: float = 0.1
     grade_timeout: float = 1.0
@@ -481,18 +479,11 @@ class VerifiableMathDebateDatasetBuilder(RLDatasetBuilder):
         self,
     ) -> tuple[VerifiableMathDebateDataset, VerifiableMathDebateDataset | None]:
         renderer = get_renderer(self.renderer_name, get_tokenizer(self.model_name))
-        problems = load_math_problems_from_jsonl(
+        train_problems = load_math_problems_from_jsonl(
             path=self.dataset_path,
             problem_field=self.problem_field,
             answer_field=self.answer_field,
-            dataset_name_field=self.dataset_name_field,
             max_count=self.max_questions,
-        )
-        train_problems, test_problems = split_items(
-            items=problems,
-            test_frac=self.test_question_frac,
-            num_test_items=self.num_test_datapoints,
-            seed=42,
         )
 
         train_dataset = VerifiableMathDebateDataset(
@@ -515,10 +506,13 @@ class VerifiableMathDebateDatasetBuilder(RLDatasetBuilder):
             is_training=True,  # Training dataset computes step-wise rewards
         )
 
-        test_dataset: VerifiableMathDebateDataset | None
-        if self.num_test_datapoints <= 0 or not test_problems:
-            test_dataset = None
-        else:
+        if self.num_test_datapoints > 0:
+            test_problems = load_math_problems_from_jsonl(
+                path=self.test_dataset_path,
+                problem_field=self.problem_field,
+                answer_field=self.answer_field,
+                max_count=-1,
+            )
             test_dataset = VerifiableMathDebateDataset(
                 batch_size=min(self.num_test_datapoints, self.batch_size),
                 problems=test_problems,
@@ -538,5 +532,7 @@ class VerifiableMathDebateDatasetBuilder(RLDatasetBuilder):
                 eval_mode=self.eval_mode,  # Uses builder's eval_mode (configurable)
                 is_training=False,  # Test dataset only computes metrics (no rewards)
             )
+        else:
+            test_dataset = None
 
         return train_dataset, test_dataset

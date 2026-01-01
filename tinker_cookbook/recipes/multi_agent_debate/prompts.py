@@ -148,12 +148,12 @@ Propose a high-quality solution with final answer in \\boxed{{...}} format; eval
 
 
 # Summarization prompt for condensing debate history
-SUMMARIZER_SYSTEM_PROMPT = """You summarize multi-agent debate transcripts.
+SUMMARIZER_SYSTEM_PROMPT = """Please summarize multi-agent debate transcripts.
 Write a concise, information-dense summary that preserves:
 - The user question
-- Each agent's key solution ideas
-- Each agent's critiques/evaluations of others (including meta-evaluation)
-- Any explicit comparisons (e.g. Agent 1 > Agent 0)
+- Each agent's solutions, stored as "Agent [ID] Solution: [solution text]"
+- Each agent's evaluations, stored as "Agent [ID] Evaluation: [evaluation text]"
+- Each agent's comparisons, stored as "Agent [ID] Comparison: [comparison text]" (use the exact text they provided)
 Do not add new information. Output plain text only. Please add clear division lines between different turns."""
 
 
@@ -209,31 +209,31 @@ You must output your response in specific XML tags. Do not output any text outsi
 """
 
 VERIFIABLE_AGENT_SYSTEM_PROMPT = """
-You are Agent {agent_id}, a rigorous logic and reasoning engine in a multi-agent verification system.
-
-YOUR GOAL:
-Solve the verifiable problem accurately and identify logical flaws in peer responses.
+You are Agent {agent_id}, a rigorous logic and reasoning engine in a multi-agent conversations. Your goal is to solve verifiable problems (e.g., math, coding) accurately while critically evaluating your peers.
 
 INPUT CONTEXT:
-You will receive a User Query and a History of previous turns.
+You will receive a User Query and a History of previous turns (if any). The User Query is a verifiable problem requiring a precise final answer. The History contains other agents' solutions, evaluations, and comparisons.
 
 INSTRUCTIONS:
+You should structure your response into three sections: Solution, Evaluation, and Comparison. Follow the instructions for each section carefully.
 
-1. **Derive Your Solution**:
+**1. Derive Your Solution**:
    - Use step-by-step chain-of-thought reasoning.
    - Verify every calculation and logical inference.
    - **CRITICAL**: You MUST end your solution with the final answer in LaTeX boxed format, e.g., \\boxed{{42}}.
 
-2. **Evaluate Peers (Error Checking)**:
-   - Review the "History".
-   - Check every line of other agents' math/code.
-   - **Solution Critique**: Identify the *exact step* where logic failed. If correct, verify the efficiency.
-   - **Meta-Evaluation**: Did this agent correctly identify errors in others? Or did they hallucinate an error?
+**2. Evaluate Peers**:
+   - Review the "History of previous turns".
+   - Check every line of other agents' solutions, evaluations, and comparisons (if any).
+   - Critique each other agent on two fronts: 
+    (1) their solution correctness, completeness, and reasoning quality, did they arrive at the right final answer? and adequately justify it?; and
+    (2) their evaluation quality, did they fairly and accurately assess others? did they spot errors or hallucinate?
 
-3. **Rank Peers**:
+**3. Compare Peers**:
+   - Perform pairwise comparisons of previous two agents' overall contributions (solution + evaluation + comparison).
    - Correctness is paramount. An agent with the correct final answer (derived correctly) > Agent with wrong answer.
-   - If multiple agents are correct, rank based on clarity, efficiency, and quality of their peer reviews.
-   - Exclude yourself (Agent {agent_id}).
+   - If both agents' solutions are correct, compare their reasoning depth, error analysis, and evaluation quality and their comparison from previous turns as well.
+   - Exclude yourself (Agent {agent_id}) from all comparisons.
 
 OUTPUT FORMAT:
 Output strictly in these XML tags:
@@ -244,21 +244,17 @@ Output strictly in these XML tags:
 </solution>
 
 <evaluation>
-[If no other agents have spoken, write "N/A".]
-[For each other agent:]
-- **Agent [ID] Verification**: [Correct/Incorrect]
-- **Agent [ID] Logic Analysis**: [Point out specific logical fallacies or calculation errors.]
-- **Agent [ID] Meta-Critique**: [Assessment of their ranking to evaluate others.]
+[If no other agents have spoken, write "N/A". Otherwise, provide step-by-step derivation and evaluation for the two agents in the history]
 </evaluation>
 
 <comparison>
 [If fewer than 2 other agents exist, write "N/A".]
-[Compare ALL unordered pairs of other agents. One comparison per line.]
-[Format: Agent X > Agent Y OR Agent X < Agent Y]
+[Compare previous two agents contribution in the history.]
+[Format: Agent X > Agent Y OR Agent X < Agent Y, and explain your reasoning.]
 [Use only > or < operators (you must choose which agent is better).]
-[Do not include Agent {agent_id} in these comparisons.]
+[Do not include Agent {agent_id} in the comparisons.]
 </comparison>
-"""
+""".strip()
 
 
 @dataclass
