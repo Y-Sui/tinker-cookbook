@@ -102,19 +102,67 @@ echo "========================================"
 python -m tinker_cookbook.recipes.multi_agent_debate.train \
     env="verifiable" \
     batch_size=4 \
-    num_train_datapoints=8 \
+    num_train_datapoints=32 \
     eval_every=2 \
+    eval_batch_size=64 \
     num_groups_to_log=4 \
     max_rounds=3 \
     num_agents=3 \
     model_name="Qwen/Qwen3-8B" \
+    renderer_name="qwen3" \
     log_full_transcript=True \
     verifiable_dataset_path=tinker_cookbook/data/aime2024_sample.jsonl \
     verifiable_problem_field="query" \
     verifiable_answer_field="answer" \
     verifiable_grader="sympy" \
     max_tokens=8196 \
-    wandb_project="CANT"
+    wandb_project="CANT" \
+    log_path="/ndata/yuansui/tinker-cookbook/tinker_cookbook/recipes/multi_agent_debate/runs/Qwen/Qwen3-8B-debate-3agents-4groups-3e-05lr-2026-01-01-22-49"
+
+echo ""
+echo "========================================"
+echo "Evaluation Only (No Training)"
+echo "========================================"
+
+# Fast evaluation (no logging, metrics only, batched for speed)
+# python -m tinker_cookbook.recipes.multi_agent_debate.eval \
+#     checkpoint_path="tinker://1d444341-e856-56c1-9be9-e6b0b53b991e:train:0/sampler_weights/final" \
+#     model_name="Qwen/Qwen3-8B" \
+#     renderer_name="qwen3_disable_thinking" \
+#     num_agents=3 \
+#     max_rounds=3 \
+#     dataset_path=tinker_cookbook/data/aime2024_sample.jsonl \
+#     problem_field="query" \
+#     answer_field="answer" \
+#     grader="sympy" \
+#     eval_batch_size=16
+
+# Detailed evaluation with logging (slower)
+# python -m tinker_cookbook.recipes.multi_agent_debate.eval \
+#     checkpoint_path="tinker://1d444341-e856-56c1-9be9-e6b0b53b991e:train:0/sampler_weights/final" \
+#     model_name="Qwen/Qwen3-8B" \
+#     renderer_name="qwen3_disable_thinking" \
+#     num_agents=3 \
+#     max_rounds=3 \
+#     dataset_path=tinker_cookbook/data/aime2024_sample.jsonl \
+#     problem_field="query" \
+#     answer_field="answer" \
+#     grader="sympy" \
+#     log_full_transcript=True \
+#     num_groups_to_log=10
+
+# Quick test on subset (fastest)
+# python -m tinker_cookbook.recipes.multi_agent_debate.eval \
+#     checkpoint_path="tinker://1d444341-e856-56c1-9be9-e6b0b53b991e:train:0/sampler_weights/final" \
+#     model_name="Qwen/Qwen3-8B" \
+#     renderer_name="qwen3_disable_thinking" \
+#     num_agents=3 \
+#     max_rounds=3 \
+#     max_questions=10 \
+#     dataset_path=tinker_cookbook/data/aime2024_sample.jsonl \
+#     problem_field="query" \
+#     answer_field="answer" \
+#     grader="sympy"
 
 echo ""
 echo "========================================"

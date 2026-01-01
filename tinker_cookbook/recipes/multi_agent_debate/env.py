@@ -237,7 +237,6 @@ class MultiAgentDebateDatasetBuilder(RLDatasetBuilder):
     log_full_transcript: bool = False
     model_name: str
     renderer_name: str
-    # Prompt source: local JSONL by default (no network).
     dataset_path: str = "tinker_cookbook/example_data/nonverifiable_queries.jsonl"
     problem_field: str = "query"
     max_questions: int = -1  # No limit by default

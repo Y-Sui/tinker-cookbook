@@ -32,6 +32,7 @@ class MultiAgentDebateEvaluator(SamplingClientEvaluator):
         grade_timeout: float = 2.0,
         max_tokens: int = 8196,
         num_groups_to_log: int = 4,
+        eval_batch_size: int = 0,  # 0 = all parallel, >0 = batch size for concurrency control
     ):
         self.problems = problems
         self.renderer = renderer
@@ -46,6 +47,7 @@ class MultiAgentDebateEvaluator(SamplingClientEvaluator):
         self.grade_timeout = grade_timeout
         self.max_tokens = max_tokens
         self.num_groups_to_log = num_groups_to_log
+        self.eval_batch_size = eval_batch_size
 
     async def __call__(self, sampling_client: tinker.SamplingClient) -> dict[str, float]:
         policy = TinkerTokenCompleter(sampling_client, max_tokens=self.max_tokens)
@@ -60,6 +62,40 @@ class MultiAgentDebateEvaluator(SamplingClientEvaluator):
         all_metrics.update({f"eval/debate/{k}": v for k, v in debate_metrics.items()})
 
         return all_metrics
+
+    async def _run_rollouts_in_batches(self, builders: list, policy, mode: str) -> list:
+        """Run rollouts in batches to control concurrency.
+
+        Args:
+            builders: List of environment builders
+            policy: Policy to use for rollouts
+            mode: Evaluation mode name (for logging)
+
+        Returns:
+            List of trajectory groups
+        """
+        if self.eval_batch_size <= 0:
+            return await asyncio.gather(
+                *[self._run_group_rollout(builder, i, policy) for i, builder in enumerate(builders)]
+            )
+
+        # Run in batches
+        trajectory_groups = []
+        num_batches = (len(builders) + self.eval_batch_size - 1) // self.eval_batch_size
+
+        for batch_idx in range(num_batches):
+            start_idx = batch_idx * self.eval_batch_size
+            end_idx = min(start_idx + self.eval_batch_size, len(builders))
+            batch_builders = builders[start_idx:end_idx]
+            batch_trajectory_groups = await asyncio.gather(
+                *[
+                    self._run_group_rollout(builder, i + start_idx, policy)
+                    for i, builder in enumerate(batch_builders)
+                ]
+            )
+            trajectory_groups.extend(batch_trajectory_groups)
+
+        return trajectory_groups
 
     async def _eval_direct_mode(self, policy) -> dict[str, float]:
         """Evaluate all problems in direct (single-turn) mode."""
@@ -84,10 +120,7 @@ class MultiAgentDebateEvaluator(SamplingClientEvaluator):
             for i in range(len(self.problems))
         ]
 
-        trajectory_groups = await asyncio.gather(
-            *[self._run_group_rollout(builder, i, policy) for i, builder in enumerate(builders)]
-        )
-
+        trajectory_groups = await self._run_rollouts_in_batches(builders, policy, "direct")
         return self._compute_metrics(trajectory_groups, "direct")
 
     async def _eval_debate_mode(self, policy) -> dict[str, float]:
@@ -113,10 +146,7 @@ class MultiAgentDebateEvaluator(SamplingClientEvaluator):
             for i in range(len(self.problems))
         ]
 
-        trajectory_groups = await asyncio.gather(
-            *[self._run_group_rollout(builder, i, policy) for i, builder in enumerate(builders)]
-        )
-
+        trajectory_groups = await self._run_rollouts_in_batches(builders, policy, "debate")
         return self._compute_metrics(trajectory_groups, "debate")
 
     async def _run_group_rollout(self, builder, i, policy):
@@ -135,11 +165,10 @@ class MultiAgentDebateEvaluator(SamplingClientEvaluator):
             dataset_name = problem.dataset_name
 
             # Extract metrics from each trajectory in the group
-            for traj_idx, metrics in enumerate(traj_group.metrics_G):
+            for metrics in traj_group.metrics_G:
                 dataset_to_metrics[dataset_name].append(
                     {
                         "problem_idx": i,
-                        "agent_id": metrics.get("agent_id", traj_idx),
                         "format": metrics.get("format", 0.0),
                         "correct": metrics.get("correct", 0.0),
                     }

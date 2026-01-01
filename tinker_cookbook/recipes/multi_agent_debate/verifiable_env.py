@@ -271,7 +271,6 @@ class VerifiableMultiAgentEnvGroupBuilder(BaseMultiAgentEnvGroupBuilder):
             )
 
         return {
-            "agent_id": float(agent_id),
             "format": 1.0 if (is_valid_format and has_box) else 0.0,
             "correct": 1.0 if correct else 0.0,
         }
@@ -342,7 +341,6 @@ class VerifiableMultiAgentEnvGroupBuilder(BaseMultiAgentEnvGroupBuilder):
             (
                 0.0,  # No final reward (all rewards are already in trajectory steps)
                 {
-                    "agent_id": agent_id,
                     **stepwise_metrics,
                     **accuracy_metrics[agent_id],
                     f"train_{dataset_name}/format": accuracy_metrics[agent_id]["train_format"],
@@ -359,7 +357,7 @@ class VerifiableMultiAgentEnvGroupBuilder(BaseMultiAgentEnvGroupBuilder):
         """Compute metrics for direct evaluation mode (single-turn)."""
         trajectory = trajectory_group[0]
         if not trajectory.transitions:
-            return [(0.0, {"agent_id": 0.0, "format": 0.0, "correct": 0.0})]
+            return [(0.0, {"format": 0.0, "correct": 0.0})]
 
         action_tokens = trajectory.transitions[0].ac.tokens
         response_text = self.renderer.parse_response(action_tokens)[0]["content"]
@@ -401,7 +399,7 @@ class VerifiableMultiAgentEnvGroupBuilder(BaseMultiAgentEnvGroupBuilder):
             )
 
             if latest is None:
-                metrics = {"agent_id": float(agent_id), "format": 0.0, "correct": 0.0}
+                metrics = {"format": 0.0, "correct": 0.0}
                 if self.log_full_transcript:
                     agent_solutions_for_logging.append((agent_id, None, "(No response)", metrics))
             else:

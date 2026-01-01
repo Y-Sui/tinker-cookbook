@@ -37,7 +37,7 @@ class CLIConfig:
     # Model Configuration
     # ============================================================================
     model_name: str = "Qwen/Qwen3-8B"
-    renderer_name: str | None = None  # Auto-detected from model if None
+    renderer_name: str | None = "qwen3_disable_thinking"
     max_tokens: int = 8196
 
     # ============================================================================
@@ -69,6 +69,7 @@ class CLIConfig:
     num_groups_to_log: int = 4  # Groups to log per batch (0 = disable)
     log_full_transcript: bool = False  # Include full debate transcripts
     eval_num_groups_to_log: int = 2  # Groups to log during evaluation
+    eval_batch_size: int = 64  # Eval concurrency (0=all parallel, >0=batch size)
     log_path: str | None = None  # Custom log path (auto-generated if None)
 
     # ============================================================================
@@ -206,6 +207,7 @@ def _create_verifiable_evaluator(cli_config: CLIConfig, train_dataset) -> MultiA
         grader=cli_config.verifiable_grader,
         max_tokens=cli_config.max_tokens,
         num_groups_to_log=cli_config.eval_num_groups_to_log,
+        eval_batch_size=cli_config.eval_batch_size,
     )
 
 
