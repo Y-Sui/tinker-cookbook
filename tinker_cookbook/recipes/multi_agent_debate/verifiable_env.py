@@ -512,6 +512,7 @@ class VerifiableMathDebateDataset(RLDataset):
 class VerifiableMathDebateDatasetBuilder(RLDatasetBuilder):
     batch_size: int
     num_train_datapoints: int
+    epoch: int = 1
     num_agents: int = 3
     max_rounds: int = 3
     history_rounds: int = 2
@@ -533,7 +534,8 @@ class VerifiableMathDebateDatasetBuilder(RLDatasetBuilder):
         """Build training dataset for online TTL.
 
         Loads ALL problems from dataset_path and creates a training dataset that samples
-        num_train_datapoints per epoch. For online test-time learning, evaluation is
+        num_train_datapoints per epoch. The total number of training datapoints is
+        num_train_datapoints * epoch. For online test-time learning, evaluation is
         handled separately by a custom evaluator that uses the same problem set.
         """
         renderer = get_renderer(self.renderer_name, get_tokenizer(self.model_name))
@@ -547,6 +549,7 @@ class VerifiableMathDebateDatasetBuilder(RLDatasetBuilder):
         )
 
         # Training dataset: samples num_train_datapoints from all problems
+        total_train_datapoints = self.num_train_datapoints * self.epoch
         train_dataset = VerifiableMathDebateDataset(
             batch_size=self.batch_size,
             problems=all_problems,
@@ -558,7 +561,7 @@ class VerifiableMathDebateDatasetBuilder(RLDatasetBuilder):
             summarize_model=self.summarize_model,
             log_full_transcript=self.log_full_transcript,
             max_rounds=self.max_rounds,
-            num_datapoints=self.num_train_datapoints,
+            num_datapoints=total_train_datapoints,
             model_name=self.model_name,
             grader=self.grader,
             grade_timeout=self.grade_timeout,

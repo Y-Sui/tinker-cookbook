@@ -228,6 +228,7 @@ class MultiAgentDebateDatasetBuilder(RLDatasetBuilder):
 
     batch_size: int
     num_train_datapoints: int
+    epoch: int = 1
     num_test_datapoints: int
     num_agents: int = 3
     max_rounds: int = 3
@@ -251,9 +252,13 @@ class MultiAgentDebateDatasetBuilder(RLDatasetBuilder):
     async def __call__(
         self,
     ) -> tuple[MultiAgentDebateDataset, MultiAgentDebateDataset | None]:
-        """Build the dataset for training and testing."""
+        """Build the dataset for training and testing.
+
+        Repeats the base dataset `epoch` times by scaling num_train_datapoints.
+        """
         renderer = get_renderer(self.renderer_name, get_tokenizer(self.model_name))
         train_questions = self.load_questions()
+        total_train_datapoints = self.num_train_datapoints * self.epoch
 
         # Training dataset (self-play)
         train_dataset = MultiAgentDebateDataset(
@@ -267,7 +272,7 @@ class MultiAgentDebateDatasetBuilder(RLDatasetBuilder):
             summarize_model=self.summarize_model,
             log_full_transcript=self.log_full_transcript,
             max_rounds=self.max_rounds,
-            num_datapoints=self.num_train_datapoints,
+            num_datapoints=total_train_datapoints,
             model_name=self.model_name,
         )
 

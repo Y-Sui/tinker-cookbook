@@ -52,7 +52,8 @@ class CLIConfig:
     # Training Configuration
     # ============================================================================
     batch_size: int = 16  # Problems per training batch
-    num_train_datapoints: int = 1024  # Total training samples per epoch
+    num_train_datapoints: int = 1024  # Training samples per epoch
+    epoch: int = 1  # Number of times to cycle through the dataset
     learning_rate: float = 3e-5
     use_cosine_lr_schedule: bool = True  # Use cosine LR decay (base_lr → 0)
     eval_every: int = 50  # Evaluate every N batches (larger for TTL)
@@ -102,6 +103,7 @@ def _build_verifiable_dataset_builder(
     return VerifiableMathDebateDatasetBuilder(
         batch_size=cli_config.batch_size,
         num_train_datapoints=cli_config.num_train_datapoints,
+        epoch=cli_config.epoch,
         num_agents=cli_config.num_agents,
         max_rounds=cli_config.max_rounds,
         history_rounds=cli_config.history_rounds,
@@ -125,6 +127,7 @@ def _build_non_verifiable_dataset_builder(
     return MultiAgentDebateDatasetBuilder(
         batch_size=cli_config.batch_size,
         num_train_datapoints=cli_config.num_train_datapoints,
+        epoch=cli_config.epoch,
         num_test_datapoints=64,  # Keep test dataset for non-verifiable
         num_agents=cli_config.num_agents,
         max_rounds=cli_config.max_rounds,
