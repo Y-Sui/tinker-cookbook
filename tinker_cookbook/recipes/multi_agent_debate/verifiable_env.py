@@ -549,7 +549,10 @@ class VerifiableMathDebateDatasetBuilder(RLDatasetBuilder):
         )
 
         # Training dataset: samples num_train_datapoints from all problems
-        total_train_datapoints = self.num_train_datapoints * self.epoch
+        if self.num_train_datapoints > len(all_problems) or self.num_train_datapoints < 0:
+            total_train_datapoints = len(all_problems) * self.epoch
+        else:
+            total_train_datapoints = self.num_train_datapoints * self.epoch
         train_dataset = VerifiableMathDebateDataset(
             batch_size=self.batch_size,
             problems=all_problems,

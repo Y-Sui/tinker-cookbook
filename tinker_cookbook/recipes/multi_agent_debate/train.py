@@ -13,6 +13,7 @@ For verifiable env, it implements online TTL by:
 import asyncio
 import os
 from datetime import datetime
+from pathlib import Path
 from typing import Literal
 
 import chz
@@ -58,6 +59,7 @@ class CLIConfig:
     use_cosine_lr_schedule: bool = True  # Use cosine LR decay (base_lr → 0)
     eval_every: int = 50  # Evaluate every N batches (larger for TTL)
     save_every: int = 100  # Save checkpoint every N batches
+    max_parallel_evals: int = 64  # Max concurrent evaluations (0=unlimited)
 
     # ============================================================================
     # History Summarization (optional)
@@ -71,7 +73,6 @@ class CLIConfig:
     num_groups_to_log: int = 4  # Groups to log per batch (0 = disable)
     log_full_transcript: bool = False  # Include full debate transcripts
     eval_num_groups_to_log: int = 2  # Groups to log during evaluation
-    max_parallel_evals: int = 64  # Max concurrent evaluations (0=unlimited)
     log_path: str | None = None  # Custom log path (auto-generated if None)
 
     # ============================================================================
@@ -155,13 +156,11 @@ def build_config(cli_config: CLIConfig) -> train.Config:
     # Model setup
     model_name = cli_config.model_name
     renderer_name = cli_config.renderer_name or model_info.get_recommended_renderer_name(model_name)
+    dataset_name = Path(cli_config.verifiable_dataset_path).stem.split("_sample")[0]
 
     # Generate run name and paths
     timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M")
-    run_name = (
-        f"{model_name}-debate-{cli_config.num_agents}agents-"
-        f"{cli_config.batch_size}groups-{cli_config.learning_rate}lr-{timestamp}"
-    )
+    run_name = f"{model_name}-renders-{renderer_name}-{dataset_name}-{cli_config.batch_size}groups-{cli_config.epoch}epochs-{timestamp}"
     log_path = cli_config.log_path or f"~/tinker/multi-agent-debate/{run_name}"
 
     # W&B configuration (support env vars)

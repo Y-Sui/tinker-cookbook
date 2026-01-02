@@ -258,8 +258,10 @@ class MultiAgentDebateDatasetBuilder(RLDatasetBuilder):
         """
         renderer = get_renderer(self.renderer_name, get_tokenizer(self.model_name))
         train_questions = self.load_questions()
-        total_train_datapoints = self.num_train_datapoints * self.epoch
-
+        if self.num_train_datapoints > len(train_questions) or self.num_train_datapoints < 0:
+            total_train_datapoints = len(train_questions) * self.epoch
+        else:
+            total_train_datapoints = self.num_train_datapoints * self.epoch
         # Training dataset (self-play)
         train_dataset = MultiAgentDebateDataset(
             batch_size=self.batch_size,
