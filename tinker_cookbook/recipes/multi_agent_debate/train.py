@@ -54,6 +54,7 @@ class CLIConfig:
     batch_size: int = 16  # Problems per training batch
     num_train_datapoints: int = 1024  # Total training samples per epoch
     learning_rate: float = 3e-5
+    use_cosine_lr_schedule: bool = True  # Use cosine LR decay (base_lr → 0)
     eval_every: int = 50  # Evaluate every N batches (larger for TTL)
     save_every: int = 100  # Save checkpoint every N batches
 
@@ -179,6 +180,7 @@ def build_config(cli_config: CLIConfig) -> train.Config:
         log_path=log_path,
         dataset_builder=dataset_builder,
         learning_rate=cli_config.learning_rate,
+        use_cosine_lr_schedule=cli_config.use_cosine_lr_schedule,
         max_tokens=cli_config.max_tokens,
         eval_every=cli_config.eval_every,
         save_every=cli_config.save_every,

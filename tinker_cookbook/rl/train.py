@@ -147,6 +147,27 @@ def _training_logprobs_from_fwd_bwd(
     return [output["logprobs"].to_torch() for output in fwd_bwd_result.loss_fn_outputs]
 
 
+def compute_cosine_lr(base_lr: float, current_step: int, total_steps: int) -> float:
+    """Compute learning rate using cosine annealing schedule.
+
+    LR decays from base_lr to 0 following: lr = base_lr * 0.5 * (1 + cos(π * step / total_steps))
+
+    Args:
+        base_lr: Initial learning rate
+        current_step: Current training step (0-indexed)
+        total_steps: Total number of training steps
+
+    Returns:
+        Computed learning rate for current step
+    """
+    import math
+    if total_steps <= 1:
+        return base_lr
+    # Cosine decay: lr = base_lr * 0.5 * (1 + cos(π * t / T))
+    progress = current_step / (total_steps - 1)  # 0 → 1
+    return base_lr * 0.5 * (1.0 + math.cos(math.pi * progress))
+
+
 @scope
 async def train_step(
     data_D: List[tinker.Datum],
@@ -227,6 +248,7 @@ class AsyncConfig:
 @chz.chz
 class Config:
     learning_rate: float
+    use_cosine_lr_schedule: bool = False  # Enable cosine LR decay
     dataset_builder: RLDatasetBuilder  # also determines batch size
     model_name: str
     max_tokens: int
@@ -332,9 +354,15 @@ async def do_sync_training_with_stream_minibatch(
     )
 
     for i_batch in range(start_batch, end_batch):
+        # Compute learning rate (with optional cosine schedule)
+        if cfg.use_cosine_lr_schedule:
+            current_lr = compute_cosine_lr(cfg.learning_rate, i_batch, num_batches)
+        else:
+            current_lr = cfg.learning_rate
+
         metrics = {
             "progress/batch": i_batch,
-            "optim/lr": cfg.learning_rate,
+            "optim/lr": current_lr,
             "progress/done_frac": (i_batch + 1) / num_batches,
         }
         t_start = time.time()
@@ -404,6 +432,7 @@ async def do_sync_training_with_stream_minibatch(
                 training_client,
                 service_client,
                 tokenizer,
+                current_lr,
             )
 
         # Log metrics
@@ -558,9 +587,15 @@ async def do_async_training(
                     return False
                 return True
 
+            # Compute learning rate (with optional cosine schedule)
+            if cfg.use_cosine_lr_schedule:
+                current_lr = compute_cosine_lr(cfg.learning_rate, i_batch, num_batches)
+            else:
+                current_lr = cfg.learning_rate
+
             metrics = {
                 "training_client/step": i_batch,
-                "optim/lr": cfg.learning_rate,
+                "optim/lr": current_lr,
                 "progress/done_frac": (i_batch + 1) / num_batches,
             }
             t_start = time.time()
@@ -579,6 +614,7 @@ async def do_async_training(
                     training_client,
                     service_client,
                     tokenizer,
+                    current_lr,
                     filter_stale_trajectory_group,
                 )
             else:
@@ -609,6 +645,7 @@ async def do_async_training(
                     tokenizer,
                     [g.env_group_builder for g in wrapped_trajectory_groups],
                     [g.trajectory_group for g in wrapped_trajectory_groups],
+                    current_lr,
                 )
             sampling_client_step = i_batch + 1
             sampling_client_updated_event.set()
@@ -791,6 +828,7 @@ async def do_train_step_streaming_and_get_sampling_client(
     training_client: tinker.TrainingClient,
     service_client: tinker.ServiceClient,
     tokenizer: Tokenizer,
+    learning_rate: float,
     trajectory_group_filter: Callable[[WrappedTrajectoryGroup | None], bool] = lambda _: True,
 ) -> tuple[tinker.SamplingClient, dict[str, Any]]:
     """
@@ -868,7 +906,7 @@ async def do_train_step_streaming_and_get_sampling_client(
 
         # Enqueue optim_step before awaiting results (so they land on same clock cycle)
         adam_params = tinker.AdamParams(
-            learning_rate=cfg.learning_rate, beta1=0.9, beta2=0.95, eps=1e-8
+            learning_rate=learning_rate, beta1=0.9, beta2=0.95, eps=1e-8
         )
         with timed(f"train/optim_substep_{i_substep}_enqueue", metrics):
             optim_future = await training_client.optim_step_async(adam_params)
@@ -916,6 +954,7 @@ async def do_train_step_and_get_sampling_client(
     tokenizer: Tokenizer,
     env_group_builders_P: Sequence[EnvGroupBuilder],
     trajectory_groups_P: list[TrajectoryGroup],
+    learning_rate: float,
 ) -> tuple[tinker.SamplingClient, dict[str, Any]]:
     update_scope_context({"step": i_batch})
 
@@ -935,7 +974,7 @@ async def do_train_step_and_get_sampling_client(
         training_logprobs_D = await train_step(
             data_D,
             training_client,
-            cfg.learning_rate,
+            learning_rate,
             cfg.num_substeps,
             cfg.loss_fn,
         )
@@ -975,9 +1014,15 @@ async def do_sync_training(
     )
 
     for i_batch in range(start_batch, end_batch):
+        # Compute learning rate (with optional cosine schedule)
+        if cfg.use_cosine_lr_schedule:
+            current_lr = compute_cosine_lr(cfg.learning_rate, i_batch, num_batches)
+        else:
+            current_lr = cfg.learning_rate
+
         metrics = {
             "progress/batch": i_batch,
-            "optim/lr": cfg.learning_rate,
+            "optim/lr": current_lr,
             "progress/done_frac": (i_batch + 1) / num_batches,
         }
         t_start = time.time()
@@ -1031,6 +1076,7 @@ async def do_sync_training(
             tokenizer,
             env_group_builders_P,
             trajectory_groups_P,
+            current_lr,
         )
 
         # Log metrics
