@@ -30,6 +30,7 @@ def get_llama_info() -> dict[str, ModelAttributes]:
     }
 
 
+@cache
 def get_qwen_info() -> dict[str, ModelAttributes]:
     org = "Qwen"
     return {
@@ -52,6 +53,7 @@ def get_qwen_info() -> dict[str, ModelAttributes]:
     }
 
 
+@cache
 def get_deepseek_info() -> dict[str, ModelAttributes]:
     org = "deepseek-ai"
     return {
@@ -60,6 +62,7 @@ def get_deepseek_info() -> dict[str, ModelAttributes]:
     }
 
 
+@cache
 def get_gpt_oss_info() -> dict[str, ModelAttributes]:
     org = "openai"
     return {
@@ -68,6 +71,7 @@ def get_gpt_oss_info() -> dict[str, ModelAttributes]:
     }
 
 
+@cache
 def get_moonshot_info() -> dict[str, ModelAttributes]:
     org = "moonshotai"
     return {
@@ -116,7 +120,9 @@ def get_recommended_renderer_names(model_name: str) -> list[str]:
         else:
             raise ValueError(f"Unknown model: {model_name}")
     elif attributes.organization == "deepseek-ai":
-        return ["deepseekv3_disable_thinking", "deepseekv3"]
+        # deepseekv3 defaults to non-thinking mode (matches HF template)
+        # Use deepseekv3_thinking for thinking mode
+        return ["deepseekv3", "deepseekv3_thinking"]
     elif attributes.organization == "openai":
         return ["gpt_oss_no_sysprompt", "gpt_oss_medium_reasoning"]
     elif attributes.organization == "moonshotai":
