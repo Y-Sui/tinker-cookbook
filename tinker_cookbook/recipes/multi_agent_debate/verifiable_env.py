@@ -178,6 +178,7 @@ class VerifiableMultiAgentDebateEnv(BaseMultiAgentDebateEnv):
         # First turn prompt
         if turn_idx == 0:
             return (
+                f"USER QUERY: {self.coordinator.state.question}\n"
                 f"Agent {self.coordinator.state.current_agent_id}, please proceed with your response.\n\n"
                 'Set <evaluation> to "N/A" and <comparison> to "N/A" as this is the first turn.\n'
                 "Noted that your <solution> must include your final answer in \\boxed{...} format;"

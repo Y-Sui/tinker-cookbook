@@ -32,7 +32,7 @@ class MultiAgentDebateEvaluator(SamplingClientEvaluator):
         grade_timeout: float = 2.0,
         max_tokens: int = 8196,
         num_groups_to_log: int = 4,
-        eval_batch_size: int = 0,  # 0 = all parallel, >0 = batch size for concurrency control
+        max_parallel_evals: int = 0,  # 0 = unlimited parallel, >0 = max concurrent evaluations
     ):
         self.problems = problems
         self.renderer = renderer
@@ -47,7 +47,7 @@ class MultiAgentDebateEvaluator(SamplingClientEvaluator):
         self.grade_timeout = grade_timeout
         self.max_tokens = max_tokens
         self.num_groups_to_log = num_groups_to_log
-        self.eval_batch_size = eval_batch_size
+        self.max_parallel_evals = max_parallel_evals
 
     async def __call__(self, sampling_client: tinker.SamplingClient) -> dict[str, float]:
         policy = TinkerTokenCompleter(sampling_client, max_tokens=self.max_tokens)
@@ -74,19 +74,22 @@ class MultiAgentDebateEvaluator(SamplingClientEvaluator):
         Returns:
             List of trajectory groups
         """
-        if self.eval_batch_size <= 0:
+        if self.max_parallel_evals <= 0:
+            print(f"[{mode}] Evaluating {len(builders)} problems in parallel...")
             return await asyncio.gather(
                 *[self._run_group_rollout(builder, i, policy) for i, builder in enumerate(builders)]
             )
 
         # Run in batches
         trajectory_groups = []
-        num_batches = (len(builders) + self.eval_batch_size - 1) // self.eval_batch_size
+        num_batches = (len(builders) + self.max_parallel_evals - 1) // self.max_parallel_evals
+        print(f"{len(builders)} problems in {num_batches} batches (size={self.max_parallel_evals})")
 
         for batch_idx in range(num_batches):
-            start_idx = batch_idx * self.eval_batch_size
-            end_idx = min(start_idx + self.eval_batch_size, len(builders))
+            start_idx = batch_idx * self.max_parallel_evals
+            end_idx = min(start_idx + self.max_parallel_evals, len(builders))
             batch_builders = builders[start_idx:end_idx]
+            print(f" Batch {batch_idx + 1}/{num_batches}: problems {start_idx}-{end_idx - 1}")
             batch_trajectory_groups = await asyncio.gather(
                 *[
                     self._run_group_rollout(builder, i + start_idx, policy)

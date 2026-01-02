@@ -104,7 +104,7 @@ python -m tinker_cookbook.recipes.multi_agent_debate.train \
     batch_size=4 \
     num_train_datapoints=32 \
     eval_every=2 \
-    eval_batch_size=64 \
+    max_parallel_evals=64 \
     num_groups_to_log=4 \
     max_rounds=3 \
     num_agents=3 \
@@ -135,7 +135,7 @@ echo "========================================"
 #     problem_field="query" \
 #     answer_field="answer" \
 #     grader="sympy" \
-#     eval_batch_size=16
+#     max_parallel_evals=16
 
 # Detailed evaluation with logging (slower)
 # python -m tinker_cookbook.recipes.multi_agent_debate.eval \
@@ -164,7 +164,24 @@ echo "========================================"
 #     answer_field="answer" \
 #     grader="sympy"
 
-echo ""
-echo "========================================"
-echo "All tests completed successfully!"
-echo "========================================"
+
+
+
+python -m tinker_cookbook.recipes.multi_agent_debate.train \
+    env="verifiable" \
+    batch_size=16 \
+    num_train_datapoints=32 \
+    eval_every=2 \
+    max_parallel_evals=64 \
+    num_groups_to_log=4 \
+    max_rounds=3 \
+    num_agents=3 \
+    model_name="Qwen/Qwen3-8B" \
+    renderer_name="qwen3" \
+    log_full_transcript=True \
+    verifiable_dataset_path=tinker_cookbook/data/aime2025_sample.jsonl \
+    verifiable_problem_field="query" \
+    verifiable_answer_field="answer" \
+    verifiable_grader="sympy" \
+    max_tokens=8196 \
+    wandb_project="CANT" 

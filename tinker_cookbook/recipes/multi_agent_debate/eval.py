@@ -52,7 +52,7 @@ class EvalConfig:
     # ============================================================================
     log_full_transcript: bool = False  # Set to True for detailed logs (slower)
     num_groups_to_log: int = 0  # Set to >0 for transcript logging (slower)
-    eval_batch_size: int = 16  # Eval concurrency (0=all parallel, 8-32=recommended)
+    max_parallel_evals: int = 16  # Max concurrent evaluations (0=unlimited, 16-64=recommended)
 
 
 async def main_async():
@@ -98,7 +98,7 @@ async def main_async():
         grader=config.grader,
         max_tokens=config.max_tokens,
         num_groups_to_log=config.num_groups_to_log,
-        eval_batch_size=config.eval_batch_size,
+        max_parallel_evals=config.max_parallel_evals,
     )
 
     # Run evaluation
