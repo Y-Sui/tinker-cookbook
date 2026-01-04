@@ -84,10 +84,6 @@ def _populate_stepwise_rewards(
         author_id = response.author_id
 
         for agent_a, op, agent_b in response.comparisons:
-            # Leave-one-out: skip if author is involved
-            if author_id == agent_a or author_id == agent_b:
-                continue
-
             if not (0 <= agent_a < num_agents and 0 <= agent_b < num_agents):
                 continue
             if agent_a == agent_b:

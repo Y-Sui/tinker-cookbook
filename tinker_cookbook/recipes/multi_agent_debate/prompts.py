@@ -469,4 +469,5 @@ def parse_agent_response(
         author_id=author_id,
         observation=observation,
         thinking=thinking,
+        self_comparisons_dropped=self_comparisons_dropped,
     )

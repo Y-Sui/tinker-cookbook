@@ -1,486 +1,333 @@
-# Multi-Agent Debate: Implementation + Math Formulation
+# Multi-Agent Debate: Current Implementation (Scope → Details → Math)
 
-This note formalizes the *exact* behavior (including edge cases) of the multi-agent debate recipe and its RL training loop, as implemented in:
+This note documents the *current* behavior (including non-obvious edge cases) of the multi-agent debate recipe as implemented under `tinker_cookbook/recipes/multi_agent_debate/`.
 
-- `tinker_cookbook/recipes/multi_agent_debate/env.py`
-- `tinker_cookbook/recipes/multi_agent_debate/reward.py`
-- `tinker_cookbook/recipes/multi_agent_debate/prompts.py`
-- `tinker_cookbook/rl/rollouts.py`
-- `tinker_cookbook/rl/data_processing.py`
-- `tinker_cookbook/rl/train.py`
+It is written to be copy/paste-able as “implementation details / methods” for a paper, but it intentionally stays faithful to the code, not an idealized design.
 
-It is written to be directly reusable as “implementation details / methods” material for a paper.
+## What This Recipe Is (High-Level Scope)
 
-## Notation
+The recipe trains (and/or evaluates) a single policy in *self-play* across multiple “roles” (“agents”) on the *same* question. The roles take turns producing:
 
-- Agents (roles): \(i \in \{0,1,\dots,N-1\}\) where \(N=\texttt{num\_agents}\).
-- Questions / problems: \(p\). A training batch contains many questions \(p \in \mathcal{P}_k\) at iteration \(k\).
-- A *group* \(p\) is one multi-agent episode (one question) containing \(N\) agent trajectories.
-- Policy at iteration \(k\): \(\pi_{\theta_k}\).
-- Sampler policy used to generate rollouts: \(q\). In the on-policy case, \(q \approx \pi_{\theta_k}\).
-- For each agent \(i\) and question \(p\), a trajectory \(\tau_{p,i}\) is a list of transitions:
-  \[
-  \tau_{p,i} = \{(o^{(1)}_{p,i}, a^{(1)}_{p,i}), (o^{(2)}_{p,i}, a^{(2)}_{p,i}), \dots \}
-  \]
-  where:
-  - \(o^{(t)}\) is the observation prompt at that agent’s \(t\)-th turn,
-  - \(a^{(t)}\) is the sampled token sequence at that turn.
-- Debate rounds: \(m \in \{1,\dots,\texttt{max\_rounds}\}\). Each round contains \(N\) global turns in fixed order \(0\to 1\to\dots\to N-1\).
+- a proposed answer (`<solution>...</solution>`),
+- a critique/meta-critique (`<evaluation>...</evaluation>`),
+- and pairwise rankings of *other* agents (`<comparison>...</comparison>`).
 
-We also use:
+Learning is driven by **comparison-derived step rewards**: when an agent ranks “Agent A > Agent B”, the recipe adds `+1` to A’s most recent step (before the ranking was made) and `-1` to B’s.
 
-- Final per-agent group reward vector \(r_p \in \mathbb{R}^N\), with component \(r_{p,i}\).
-- Advantage vector \(A_p \in \mathbb{R}^N\), with component \(A_{p,i}\).
-- Parsed response objects \(R_{p,i,m}\) (agent \(i\)’s response in round \(m\)), which include text fields and extracted comparisons.
+The recipe has two environment variants:
 
-## System Decomposition (What Code Maps to What Math)
+1) **Non-verifiable debate** (`env.py`): open-ended questions; reward comes only from peer comparisons.
+2) **Verifiable math debate** (`verifiable_env.py`): math problems with ground truth; *training reward is still comparison-based*, but the system also logs correctness/format metrics and supports correctness-based evaluation modes.
 
-**(1) Prompting + parsing**
-- `prompts.py` defines a strict XML contract and parses model outputs into structured fields.
+## Files and Entry Points (Concrete Code Map)
 
-**(2) Environment + coordinator**
-- `env.py` defines:
-  - a shared coordinator that enforces global turn order across agents,
-  - per-agent envs that produce observations and accept actions,
-  - how to construct “debate history” text for the prompt,
-  - how to compute the final group reward from all parsed comparisons.
+Core multi-agent debate implementation:
 
-**(3) Rollouts**
-- `rl/rollouts.py` runs `asyncio.gather` over agents, but coordination ensures only one agent acts at a time.
+- `tinker_cookbook/recipes/multi_agent_debate/coordinator.py`: shared turn-taking state (`MultiAgentCoordinator`).
+- `tinker_cookbook/recipes/multi_agent_debate/base_env.py`: shared env logic + shared reward shaping (`BaseMultiAgentDebateEnv`, `BaseMultiAgentEnvGroupBuilder`).
+- `tinker_cookbook/recipes/multi_agent_debate/env.py`: non-verifiable debate env + dataset builder.
+- `tinker_cookbook/recipes/multi_agent_debate/verifiable_env.py`: verifiable math env + dataset builder + evaluation modes.
+- `tinker_cookbook/recipes/multi_agent_debate/prompts.py`: system prompts + XML parsing (`parse_agent_response`).
+- `tinker_cookbook/recipes/multi_agent_debate/utils.py`: stop conditions + reward indexing helpers + logging.
 
-**(4) RL data processing**
-- `rl/data_processing.py` converts each agent trajectory into one or more `tinker.Datum`s with token-level `logprobs`, `advantages`, and `target_tokens`.
+Supporting scripts:
 
-**(5) RL training**
-- `rl/train.py` implements the loop and calls Tinker `forward_backward_async(..., loss_fn="importance_sampling")` + `optim_step_async(...)`.
+- `tinker_cookbook/recipes/multi_agent_debate/train.py`: training CLI; wires the dataset builder into the generic RL trainer (`tinker_cookbook/rl/train.py`) and (for verifiable) adds a custom evaluator.
+- `tinker_cookbook/recipes/multi_agent_debate/eval.py`: evaluation-only CLI for verifiable math, given a checkpoint.
+- `tinker_cookbook/recipes/multi_agent_debate/evaluator.py`: verifiable evaluator (runs debate rollouts; direct mode exists but is currently commented out in `__call__`).
+- `tinker_cookbook/recipes/multi_agent_debate/inference.py`: OpenRouter “self-play” script that exercises the same coordinator/parsing/reward logic without Tinker training.
 
-## Output Contract (XML Schema) and Parsing Details
+The generic RL plumbing that consumes this environment:
 
-### Required XML tags and order
+- `tinker_cookbook/rl/rollouts.py`: runs one rollout per env (concurrently) and then calls `compute_group_rewards(...)`.
+- `tinker_cookbook/rl/data_processing.py`: converts trajectories + returns into token-level training data and computes centered advantages.
 
-Each agent’s action is expected to decode to text with *exactly* these tags in this order:
+## Runtime Objects and Control Flow
+
+### Episode, turns, and trajectories
+
+Fix:
+
+- number of agents \(N = \texttt{num\_agents}\),
+- maximum rounds \(R = \texttt{max\_rounds}\),
+- maximum global turns \(T_{\max} = N \cdot R\).
+
+For each question/problem \(p\), the group builder creates:
+
+- one shared `MultiAgentCoordinator(question=p, num_agents=N, max_turns=T_max)`, and
+- \(N\) env instances `BaseMultiAgentDebateEnv(agent_id=i, coordinator=...)`, one per role.
+
+Each env produces a per-agent trajectory:
+\[
+\tau_i = \{(o_{i,0}, a_{i,0}, r_{i,0}), (o_{i,1}, a_{i,1}, r_{i,1}), \dots, (o_{i,R-1}, a_{i,R-1}, r_{i,R-1})\},
+\]
+where there is exactly one transition per “cycle” (one full pass over all agents), so each agent takes \(R\) actions total.
+
+### Turn-taking (the coordinator)
+
+`MultiAgentCoordinator` (in `coordinator.py`) maintains a shared `ConversationState`:
+
+- `current_turn`: global turn index \(t \in \{0, 1, \dots, T_{\max}\}\),
+- `current_agent_id = current_turn mod N`,
+- `agent_responses`: list of parsed responses, ordered by global turn,
+- `done`: whether the conversation has reached `max_turns`.
+
+Turn order is enforced via an `asyncio.Condition`. Although `rl/rollouts.py` launches all env rollouts concurrently (`asyncio.gather`), each env blocks in `wait_for_turn(...)` until it is that agent’s turn, so only one agent effectively acts at a time.
+
+## Prompting and Parsing (Exact Contract)
+
+### What is sent to the model
+
+Each env step constructs a two-message prompt:
+
+- system: `AGENT_SYSTEM_PROMPT.format(agent_id=i)` or `VERIFIABLE_AGENT_SYSTEM_PROMPT.format(agent_id=i)`
+- user: `get_observation_string()` (question + some amount of history + per-turn instruction)
+
+The system prompt and user prompt both require the model to output exactly three XML tags, in order:
 
 1. `<solution>...</solution>`
 2. `<evaluation>...</evaluation>`
-3. `<comparison>...</comparison>` (allowed to be `N/A` or empty)
+3. `<comparison>...</comparison>`
 
-The system prompt also imposes key constraints that affect reward correctness:
+### Parsing behavior (`parse_agent_response`)
 
-- Agents must not include themselves in the `<comparison>` section.
-- Agents are asked to “reason before judging” to encourage consistent structure and reduce brittle output formats.
+`parse_agent_response` (in `prompts.py`) is designed to be robust to common model wrappers and truncations:
 
-### Parser normalization (robustness to common wrappers)
+1) Normalization:
+   - Strips leading/trailing whitespace.
+   - Removes a leading fenced block marker (e.g. ```xml) and a trailing ``` fence if present.
+   - Extracts and removes `<think>...</think>` blocks (case-insensitive); the removed content is stored as `ParsedResponse.thinking` for logging/debugging.
 
-Before extracting tags, the parser applies normalizations that matter for real model outputs:
+2) Preferred parse path:
+   - It searches for the **last** complete triple-tag block (`<solution>...<evaluation>...<comparison>...</comparison>`) using a multiline regex that requires the tags to start at the beginning of a line (or start-of-string).
+   - If found, that last full block is used.
 
-- Strips Markdown code fences like:
-  ```xml
-  ...
-  ```
-- Removes Qwen-style `<think>...</think>` wrappers (case-insensitive), while preserving inner content.
-- If there is preamble text, parsing begins at the first structured tag occurrence.
+3) Fallback parse path:
+   - If the full block is missing (e.g., max_tokens cutoff), it tries to extract each tag separately (again preferring the last match).
+   - Missing/incomplete tags become placeholder strings like `[INCOMPLETE] ...` or `[PARSE_ERROR: Missing <solution> tag]`.
 
-### Parsing comparisons (votes) with authorship
+4) Comparison extraction:
+   - From the `<comparison>` text it extracts all occurrences matching:
+     \[
+     \texttt{Agent\\s+(\\d+)\\s*([><])\\s*Agent\\s+(\\d+)}.
+     \]
+   - Any comparison that includes the author (self-comparison) is dropped and counted in `ParsedResponse.self_comparisons_dropped`.
+   - The result is `comparisons: list[tuple[int, str, int]]`, where each entry is `(agent_a_id, op, agent_b_id)` and `op ∈ {">","<"}`.
 
-From the `<comparison>` block, the parser extracts zero or more lines matching:
+Important: comparisons are extracted even if the agent includes explanatory prose around them; the extractor matches substrings anywhere in the `<comparison>` block.
 
-```
-Agent A > Agent B
-Agent A < Agent B
-```
+## Observation / History Formatting
 
-Each extracted line yields a tuple:
-\[
-(a,\operatorname{op},b), \quad \operatorname{op}\in\{>,<\}.
-\]
+### Non-verifiable history (`env.py`)
 
-**Authorship is attached at submission time** (the coordinator knows which agent produced the response), yielding:
-\[
-\mathcal{C}_p = \{(u, a, \operatorname{op}, b)\},
-\]
-where \(u\) is the author agent id. Importantly:
+Non-verifiable debate context is built from `ParsedResponse` objects and rendered turn-by-turn in `_format_turns(...)`. The prompt includes the *question* and then a “Previous turns of conversation” block.
 
-- Any extracted comparison where \(a=u\) or \(b=u\) is dropped (enforcing “no self-comparison”).
-- Malformed comparisons are ignored during reward computation (details below).
+Non-verifiable debates use the same history window semantics as the verifiable env:
 
-## Observation Construction (What Each Agent Sees)
+- `history_turns < 0` → include all prior turns,
+- `history_turns = 0` → include no prior turns,
+- `history_turns = K > 0` → include only the last `K` prior turns.
 
-Each agent env constructs an observation by rendering two messages:
+If `summarize_history=True`, the entire history string (as constructed) is summarized by an auxiliary OpenRouter model (see below).
 
-- system: `AGENT_SYSTEM_PROMPT.format(agent_id=i)`
-- user: a “debate context” string that includes the question, plus some recent transcript history.
+### Verifiable history (`verifiable_env.py`)
 
-### History truncation (`history_rounds`)
+Verifiable debates implement the “expected” semantics:
 
-The env stores parsed responses by turn. The history included in the prompt is turn-based:
+- `history_turns < 0` → show all turns,
+- `history_turns == 0` → show no turns,
+- `history_turns > 0` → show last `history_turns` turns.
 
-- `history_rounds = -1`: include *all* prior turns.
-- `history_rounds = 0`: include no history.
-- `history_rounds = K > 0`: include only the last \(K\) turns.
+Turn numbering is preserved via a `start_offset`, so the displayed indices correspond to the original global turn numbers even when history is truncated.
 
-Optionally, older turns can be summarized via an auxiliary sampling call (configured by `summarize_history=True` and `summarize_model=<model_name>`). In that mode, the prompt includes:
+### Optional summarization (shared across envs)
 
-- a summary of turns older than the last `history_rounds`, plus
-- the last `history_rounds` turns verbatim.
+If `summarize_history=True`, `BaseMultiAgentEnvGroupBuilder` creates exactly one shared `OpenRouterMessageCompleter` per group and passes it into each env as `_summarizer_policy`.
 
-If `summarize_history=False`, the environment includes the entire raw history (no truncation), which can grow over time.
+- The summarizer uses `SUMMARIZER_SYSTEM_PROMPT` from `prompts.py`.
+- It requires `OPENROUTER_API_KEY` to be set.
+- The summarization happens inside `BaseMultiAgentDebateEnv._summarize(...)` and returns plain text which is then used as the “history” chunk in the next turn’s observation string.
 
-### Per-turn bootstrapping logic (history window)
+## Sampling Stop Conditions
 
-The first turn is special-cased to avoid “evaluate with no candidates”:
-
-- Turn 1 (Agent 0): instruct: propose solution; set evaluation and comparison to `N/A`.
-- Turn 2+: instruct: write a solution and evaluate the most recent visible prior completions (up to the history window), including meta-evaluating prior evaluations/comparisons.
-
-### Stop conditions (sampling termination)
-
-The environment uses a debate-specific stop marker:
+The recipe uses a debate-specific stop marker:
 
 ```
 </comparison>
 ```
 
-Stop sequences are made renderer-compatible:
+`get_debate_stop_condition(renderer)` (in `utils.py`) makes this renderer-compatible:
 
-- If the renderer provides token-id stop sequences (token-based renderers), we cannot append strings, so we reuse the renderer stop tokens.
-- If the renderer provides string stop sequences (text-based renderers), we append the debate-specific XML close tag (deduplicated).
+- if the renderer uses token-id stop sequences (`list[int]`), it returns the renderer-provided stop tokens unchanged,
+- if the renderer uses string stop sequences (`list[str]`), it appends `</comparison>` (deduplicated).
 
-This prevents “mixed stop types” bugs and ensures sampling terminates after the required fields are emitted.
+The OpenRouter self-play script (`inference.py`) always passes `stop=["</comparison>"]` directly to the chat API.
 
-## Episode Structure and Rewards
+## Reward Shaping (Current Implementation)
 
-### Coordinator and turn-taking
+### Key design choice: rewards are step-wise and assigned post-hoc
 
-For each question \(p\), self-play training constructs a single coordinator shared by all \(N\) envs. The coordinator stores:
+During env stepping (`BaseMultiAgentDebateEnv.step`), the immediate per-step reward is always `0.0`.
 
-- `current_agent_id` (global turn index modulo \(N\))
-- all parsed responses by turn
-- `done` flag
+After all rollouts complete, the group builder mutates the collected trajectories in-place using the full conversation transcript (`ParsedResponse` list) to assign **step-wise rewards**. There is no additional “final reward” in this recipe: the group builder returns final rewards of `0.0` for every agent, and all learning signal comes from the step rewards.
 
-Agents block on a condition variable until it is their turn. Although rollouts run envs concurrently, effective action order is sequential.
+### Comparison events
 
-### Termination
-
-The episode ends after a fixed number of turns:
+For one debate instance (one question/problem), define the set of authored comparison events:
 \[
-\texttt{max\_turns} = N \cdot \texttt{max\_rounds}
-\]
-where `max_rounds` is interpreted as a number of full agent cycles.
-
-### Per-step rewards and failure behavior
-
-The environment returns a per-step reward:
-\[
-r^{\text{step}}_{p,i,t} =
-\begin{cases}
--1 & \text{if parsing/turn-taking fails (and episode aborts)} \\
-0 & \text{otherwise}
-\end{cases}
-\]
-
-On error, the coordinator is aborted (to avoid deadlocks in other env tasks), and the episode is marked done.
-
-### Final group reward
-
-The main learning signal is a final *group reward* \(r_{p,i}\) computed from peer comparisons after the episode finishes. Total return per agent is:
-\[
-R_{p,i} = \sum_t r^{\text{step}}_{p,i,t} + r_{p,i}.
-\]
-
-In typical successful episodes, \(\sum_t r^{\text{step}}_{p,i,t}=0\), so \(R_{p,i}=r_{p,i}\).
-
-## Pairwise Comparisons as Votes (Formal Definition)
-
-Across all agents and all rounds, the set of authored comparisons is:
-\[
-\mathcal{C}_p = \{(u, a, \operatorname{op}, b)\}.
-\]
-
-**Validity checks.** A comparison is considered valid iff:
-
-- \(a,b \in \{0,\dots,N-1\}\),
-- \(a \neq b\),
-- \(\operatorname{op} \in \{>,<\}\).
-
-Invalid comparisons are discarded and counted as "malformed" in metrics.
-
-If there are no valid comparisons, all final rewards default to 0.
-
-## Reward Function 1: Win Rate (Leave-One-Out, `reward_mode=win_rate`)
-
-This computes a leave-one-out win-rate for each target agent.
-
-Define per-agent counters:
-
-- wins: \(W_i \in \mathbb{R}_{\ge 0}\)
-- votes: \(V_i \in \mathbb{R}_{\ge 0}\)
-
-For each valid comparison \((u,a,\operatorname{op},b)\), update **for each target agent \(i\)** only if:
-
-- \(u \neq i\) (leave-one-out), and
-- \(i \in \{a,b\}\) (only comparisons involving \(i\) matter to \(i\)’s score).
-
-Then:
-
-- If \(\operatorname{op} = >\), the comparison says "\(a\) beats \(b\)":
-  \[
-  W_a \mathrel{+}= 1,\quad V_a \mathrel{+}= 1,\quad V_b \mathrel{+}= 1.
-  \]
-- If \(\operatorname{op} = <\), the comparison says "\(a\) loses to \(b\)":
-  \[
-  W_b \mathrel{+}= 1,\quad V_a \mathrel{+}= 1,\quad V_b \mathrel{+}= 1.
-  \]
-
-The final reward is:
-\[
-r^{\text{win\_rate}}_{p,i} =
-\begin{cases}
-\dfrac{W_i}{V_i} & V_i > 0 \\
-0 & V_i = 0
-\end{cases}
-\quad\in[0,1].
-\]
-
-Interpretation: "fraction of peer votes the agent wins".
-
-## Reward Function 2: Win Minus Loss (Leave-One-Out, `reward_mode=win_minus_loss`)
-
-This computes a leave-one-out signed outcome per matchup.
-
-Define per-agent counters:
-
-- signed score: \(S_i \in \mathbb{R}\)
-- matchups: \(M_i \in \mathbb{R}_{\ge 0}\)
-
-For each valid comparison \((u,a,\operatorname{op},b)\), update **for each target agent \(i\)** only if:
-
-- \(u \neq i\), and
-- \(i \in \{a,b\}\).
-
-Always:
-\[
-M_a \mathrel{+}= 1,\quad M_b \mathrel{+}= 1.
-\]
-
-If \(\operatorname{op} = >\):
-\[
-S_a \mathrel{+}= 1,\quad S_b \mathrel{-}= 1.
-\]
-
-If \(\operatorname{op} = <\):
-\[
-S_a \mathrel{-}= 1,\quad S_b \mathrel{+}= 1.
-\]
-
-Final reward:
-\[
-r^{\text{wml}}_{p,i} =
-\begin{cases}
-\dfrac{S_i}{M_i} & M_i > 0 \\
-0 & M_i = 0
-\end{cases}
-\quad\in[-1,1].
-\]
-
-Interpretation: “average signed margin per matchup; ties contribute 0”.
-
-## Advantage Computation (Centered Within a Group)
-
-The RL pipeline centers returns within each group (question) to form advantages:
-\[
-A_{p,i} = R_{p,i} - \frac{1}{N}\sum_{j=0}^{N-1} R_{p,j}.
-\]
-
-This acts as a per-group baseline and makes training invariant to adding a constant to all agent rewards for a question.
-
-Key edge cases:
-
-- If all returns are identical (e.g., no comparisons, no errors), then all \(A_{p,i}=0\) and that group produces zero policy gradient.
-- If exactly one agent gets a parse error, its extra \(-1\) step reward creates variance in \(R_{p,i}\), producing non-zero \(A_{p,i}\) even when pairwise rewards are all 0.
-
-## Converting Trajectories to Token-Level Training Data (`Datum`)
-
-Each agent trajectory \(\tau_{p,i}\) is converted into one or more `tinker.Datum` objects. Each `Datum` carries:
-
-- a `model_input` (token chunks)
-- `loss_fn_inputs` with token-aligned vectors:
-  - `target_tokens`
-  - `logprobs` (under sampler \(q\))
-  - `advantages` (scalar advantage broadcast across action tokens)
-  - `mask` (1 for action tokens, 0 for observation tokens; used for local metrics)
-
-### Full-sequence assembly with prefix checks
-
-Each trajectory is a list of (observation, action-with-logprobs) pairs. The code constructs a “full sequence” by appending only the observation *delta* when the new observation is a strict extension of the previous context.
-
-Let \(x\) be the running “full sequence” for the current `Datum` being built.
-
-- If \(x\) is empty: set delta observation to the whole observation \(o\).
-- Else if \(x\) is a prefix of the new observation \(o\): delta observation is the suffix \(o_{|x|:}\).
-- Else: finalize the current `Datum` and start a new one from scratch.
-
-This is necessary because the environment sometimes produces observations that are not prefixes of previous observation+action, e.g. due to:
-
-- round-dependent instruction templates,
-- history truncation (`history_rounds`),
-- per-field clipping (`max_chars_per_field`).
-
-### Per-token fields
-
-For each `Datum` full sequence \(x\), define token-level arrays aligned to \(x\):
-
-- sampler logprobs:
-  - observation tokens get 0 (not sampled),
-  - action tokens get the sampler logprobs from `TokensWithLogprobs`.
-- advantages:
-  - observation tokens get 0,
-  - action tokens get the trajectory-level advantage \(A_{p,i}\) (constant per token).
-- mask:
-  - observation tokens get 0,
-  - action tokens get 1.
-
-Then \(x\) is shifted into next-token prediction form:
-
-- input tokens: \((x_0, x_1, \dots, x_{T-2})\)
-- target tokens: \((x_1, x_2, \dots, x_{T-1})\)
-
-The logprobs/advantages/mask arrays are sliced to match this shifted alignment, dropping the first position.
-
-### Mask handling
-
-The RL training call strips `mask` before sending data to Tinker’s built-in loss, because the built-in loss does not consume it. Mask is still retained locally for diagnostics:
-
-- `optim/kl_sample_train_*` and `optim/entropy` are computed over action tokens only (where mask==1).
-
-## RL Objective Used (`loss_fn=importance_sampling`)
-
-The default Tinker loss for RL is `importance_sampling`. At a high level, it implements a token-level policy-gradient objective for data collected under a sampler policy \(q\), while optimizing a training policy \(p=\pi_\theta\).
-
-Conceptually:
-\[
-\mathcal{L}(\theta)
-= -\sum_{p \in \mathcal{P}_k}\sum_{i=0}^{N-1}\sum_{t \in \text{action tokens of }\tau_{p,i}}
-\rho_{p,i,t}(\theta)\; A_{p,i},
+\mathcal{C} = \{(u, t, a, \operatorname{op}, b)\},
 \]
 where:
+
+- \(t\) is the global turn index of the authored response (0-based),
+- \(u\) is the author agent id of that response,
+- \(a,b\) are the two compared agents referenced in the comparison text,
+- \(\operatorname{op} \in \{>,<\}\).
+
+These events come from `ParsedResponse.comparisons`, which already removed self-comparisons at parse time (author \(u\) not allowed to appear in the extracted pairs).
+
+Events are ignored if:
+
+- \(a\) or \(b\) is out of bounds (`0 <= agent_id < N`),
+- \(a=b\),
+- \(\operatorname{op} \notin \{>,<\}\),
+- one of \(a\) or \(b\) has not yet acted at least once *before* turn \(t\) (details below).
+
+### Which step gets credited? “Most recent action before the comparison”
+
+Each agent \(i\) has one transition per cycle. The reward shaper attributes each comparison to the compared agents’ **most recent step strictly before** the current authored turn.
+
+Concretely, the shaper computes:
+
+- `agent_a_step_idx = get_step_idx_before_turn(a, turn_idx=t, num_agents=N)`
+- `agent_b_step_idx = get_step_idx_before_turn(b, turn_idx=t, num_agents=N)`
+
+where `get_step_idx_before_turn` (in `utils.py`) implements:
+
+1) Find the most recent global turn index \(t' < t\) at which agent \(i\) acted.
+2) Convert that global turn index to a per-agent step index via:
 \[
-\rho_{p,i,t}(\theta) =
-\exp\Big(\log \pi_\theta(x_t \mid x_{<t}) - \log q(x_t \mid x_{<t})\Big).
+s = \left\lfloor \frac{t'}{N} \right\rfloor.
 \]
 
-In the fully on-policy setting, \(q \approx \pi_{\theta_k}\) and \(\rho \approx 1\).
+If an agent has not acted before \(t\), the function returns \(-1\), and the comparison event is skipped.
 
-## Training Loop (Detailed)
+#### Worked example (3 agents, 2 cycles)
 
-### Batch structure
+Let \(N=3\). Global turns proceed in fixed order and “cycle” means one full pass over all agents:
 
-At iteration \(k\), the dataset yields a batch of `EnvGroupBuilder`s:
+| Global turn \(t\) | Acting agent | Cycle \(c=\lfloor t/N \rfloor\) | That agent’s step index |
+|---:|---:|---:|---:|
+| 0 | 0 | 0 | 0 |
+| 1 | 1 | 0 | 0 |
+| 2 | 2 | 0 | 0 |
+| 3 | 0 | 1 | 1 |
+| 4 | 1 | 1 | 1 |
+| 5 | 2 | 1 | 1 |
 
-- batch size = number of questions per iteration = `batch_size`
-- for each question \(p\), the group builder will create \(N\) env instances (one per role)
+Now suppose at **turn \(t=4\)** (Agent 1’s response) the `<comparison>` text contains `Agent 0 > Agent 2`.
 
-Thus, each training iteration samples \( |\mathcal{P}_k| \times N \) trajectories.
+- For Agent 0: most recent action strictly before \(t=4\) was at \(t'=3\), so credited step is \(s_0=\lfloor 3/3 \rfloor = 1\).
+- For Agent 2: most recent action strictly before \(t=4\) was at \(t'=2\), so credited step is \(s_2=\lfloor 2/3 \rfloor = 0\).
 
-### Sampling policy and rollouts
+So this single comparison updates **Agent 0 step 1** by `+1` and **Agent 2 step 0** by `-1`. This “cross-cycle” attribution happens whenever the author is early in a cycle and one compared agent has not yet taken their turn in that same cycle.
 
-The RL loop creates a `TinkerTokenCompleter` from a `SamplingClient` (sampler weights), then calls `do_group_rollout(builder, policy)` for each group.
+Similarly, at **turn \(t=5\)** (Agent 2’s response), if it writes `Agent 1 < Agent 0`:
 
-Each group rollout returns:
+- Agent 1’s most recent action before \(t=5\) is \(t'=4\) → credited step \(s_1=\lfloor 4/3 \rfloor = 1\) (gets `-1`).
+- Agent 0’s most recent action before \(t=5\) is \(t'=3\) → credited step \(s_0=\lfloor 3/3 \rfloor = 1\) (gets `+1`).
 
-- `trajectories_G`: list of \(N\) per-agent trajectories,
-- `final_rewards_G`: list of \(N\) final group rewards,
-- `metrics_G`: list of \(N\) per-trajectory metric dicts (includes debate reward diagnostics).
+### Reward update rule
 
-### Advantage + data assembly
+For a valid comparison event \((u, t, a, \operatorname{op}, b)\) with computed step indices \(s_a, s_b \ge 0\), the shaper updates the rewards stored in the trajectories’ transitions:
 
-For each trajectory group:
+- If \(a > b\):
+  \[
+  r_{a,s_a} \mathrel{+}= 1,\quad r_{b,s_b} \mathrel{-}= 1.
+  \]
+- If \(a < b\):
+  \[
+  r_{a,s_a} \mathrel{-}= 1,\quad r_{b,s_b} \mathrel{+}= 1.
+  \]
 
-1) compute total returns per agent:
-   \[
-   R_{p,i} = \sum_t r^{\text{step}}_{p,i,t} + r_{p,i}
-   \]
-2) compute centered advantages \(A_{p,i}\)
-3) convert trajectories to `Datum`s
-4) concatenate all `Datum`s across all groups into a single training list \(D\)
+This is exactly `BaseMultiAgentEnvGroupBuilder._populate_stepwise_rewards(...)`.
 
-### Optimization and pipelining
+### Total return per agent
 
-Training uses pipelined asynchronous calls to keep compute aligned to Tinker’s worker “clock cycles”:
+Because final rewards are always `0.0`, each agent’s total return for the debate is:
+\[
+R_i = \sum_{s=0}^{R-1} r_{i,s}.
+\]
 
-1) enqueue `forward_backward_async(D_chunk)`
-2) enqueue `optim_step_async`
-3) while awaiting results of current chunk, enqueue the next chunk’s `forward_backward_async` and `optim_step_async`
+If no valid comparisons occur, all \(r_{i,s}=0\) and all returns are 0.
 
-This does not change the objective; it reduces idle time.
+### Logging for reward shaping
 
-### Checkpointing and sampling-client refresh
+The reward shaper returns a single summary metric:
 
-At the end of an iteration, the loop obtains a fresh sampling client:
+- `stepwise_comparisons_used`: sum of absolute non-zero reward increments assigned across all transitions.
 
-- either by saving a checkpoint when `save_every` triggers, or
-- by calling `save_weights_and_get_sampling_client_async()`
+This is computed by scanning all trajectories after mutation and summing `abs(transition.reward)` whenever a transition reward is non-zero. Note that if multiple comparisons hit the same step with opposite signs (e.g., `+1` then `-1`), they can cancel to 0 and will not contribute to this metric.
 
-This is crucial because existing sampling clients do not automatically pick up new weights.
+## RL Advantage Computation and Token-Level Objective (How Rewards Become Gradients)
 
-### Evaluation mode: role-averaged vs fixed opponents
+This section is implemented outside the recipe directory (generic RL code), but it is part of the end-to-end behavior.
 
-If a test dataset is built:
+### Advantage: centered within each debate group
 
-- training still uses self-play (all roles played by the current policy),
-- evaluation uses `self_play=False`:
-  - for each question, create \(N\) separate debates,
-  - in debate \(i\), the learned policy controls role \(i\),
-  - fixed opponent policies control the other roles.
+The RL pipeline computes advantages from total per-trajectory returns (step rewards + final reward) and centers them within each group:
+\[
+A_i = R_i - \frac{1}{N}\sum_{j=0}^{N-1} R_j.
+\]
 
-This yields “role-averaged” evaluation, probing whether improvements are robust to role assignment.
+This is `tinker_cookbook/rl/data_processing.py::compute_advantages(...)`.
 
-## Metrics and Artifacts (What to Log and How to Interpret)
+If all agents receive identical returns (e.g., no comparisons), all advantages are 0 and that group contributes no policy gradient (the trainer may warn and keep a singleton group).
 
-### Debate reward metrics (per trajectory; then averaged)
+### Trajectory → token-level training data
 
-For each agent \(i\), the group reward computation emits:
+`tinker_cookbook/rl/data_processing.py::trajectory_to_data(...)` converts each trajectory into one or more `tinker.Datum`s:
 
-- `pairwise_reward` (the selected reward value)
-- `pairwise_reward_is_win_rate` (indicator)
-- `pairwise_reward_is_win_minus_loss` (indicator)
-- `pairwise_total_votes` (number of valid comparisons observed)
-- `pairwise_malformed` (number of discarded malformed comparisons)
-- `pairwise_any_votes` (1 if any valid comparisons exist, else 0)
+- It merges consecutive (observation, action) pairs into a single sequence when each new observation is a strict prefix-extension of the prior observation+action context.
+- If the observation is not a prefix-extension (possible when history formatting changes due to truncation or summarization), it closes the current datum and starts a new one.
 
-### Per-step env metrics (per transition; then averaged)
+For each datum, it builds per-token arrays:
 
-- `cycle` (current cycle index)
-- `parse_error` (1 if parsing/turn-taking failed for that transition)
+- `logprobs`: sampler logprobs for action tokens, 0 for observation tokens,
+- `advantages`: broadcasts the trajectory-level advantage \(A_i\) across action tokens, 0 for observation tokens,
+- `mask`: 1 for action tokens, 0 for observation tokens (used locally for diagnostics).
 
-### RL aggregate metrics (computed from trajectory groups)
+### Optimization objective
 
-Common aggregate metrics include:
+Training uses Tinker’s built-in `loss_fn="importance_sampling"` (see `tinker_cookbook/rl/train.py`). Conceptually it is a token-level policy-gradient objective with an importance correction between the sampler policy \(q\) and the current policy \(\pi_\theta\).
 
-- token/episode stats:
-  - `env/all/ac_tokens_per_turn`, `env/all/ob_tokens_per_turn`, `env/all/turns_per_episode`
-  - `env/all/total_episodes`, `env/all/total_turns`
-- reward stats:
-  - `env/all/reward/total` (mean total return across all trajectories)
-  - `env/all/by_group/frac_mixed` (fraction of groups with non-uniform returns across roles)
+## Verifiable Math Variant (What Is Different)
 
-### Optimization diagnostics
+The verifiable environment (`verifiable_env.py`) requires that each `<solution>` contains a final answer in `\\boxed{...}` format. The recipe supports:
 
-Computed over action tokens only:
+- **Training mode (`is_training=True`)**:
+  - rewards: still *comparison-derived step rewards* (identical shaping rule as above),
+  - metrics: logs `train_<dataset>/format`, `train_<dataset>/correct`, and `train_<dataset>/pass@N`, computed using the latest response per agent (correctness) and the fraction of valid formatted responses across all of that agent’s turns (format).
 
-- `optim/kl_sample_train_v1`, `optim/kl_sample_train_v2`
-- `optim/entropy`
+- **Evaluation mode (`is_training=False`)**:
+  - `eval_mode="debate"`: multi-turn debate, then compute `format`/`correct` from each agent’s latest parsed solution.
+  - `eval_mode="direct"`: a separate single-turn env `DirectMathEvaluationEnv` that prompts once and grades the response text.
 
-### Logtree transcripts (qualitative debugging)
+Correctness grading uses `tinker_cookbook/recipes/math_rl/math_grading.py` via `safe_grade(...)`, with a configurable `grader` (`"sympy"` or `"math_verify"`) and `grade_timeout`.
 
-When logtree logging is enabled and `log_full_transcript=True`, each group can include a full transcript dump:
+## Transcript Logging (Qualitative Debugging)
 
-- question
-- per round:
-  - per agent: system prompt, observation string, extracted fields, raw output text
+`utils.py` provides logtree helpers:
 
-This is the most direct way to diagnose reward issues such as:
+- `log_debate_transcript(coordinator)`: logs per-turn system prompt, observation string, parsed fields, and raw response.
+- `log_debate_evaluation_final_solutions(...)` and `log_direct_evaluation(...)`: log verifiable evaluation details.
 
-- low `pairwise_total_votes` (agents not producing comparisons),
-- high `pairwise_malformed` (bad formatting),
-- reward hacking (e.g., verbose but low-quality solutions receiving votes),
-- prompt drift caused by history truncation/clipping.
+These are enabled via `log_full_transcript` and logtree’s outer logging context (e.g., the RL trainer’s `num_groups_to_log`).
+
+## Notable Edge Cases / Non-Obvious Behaviors
+
+- **Non-verifiable `history_turns=0` means “no history”.** The prompt includes only the question and the per-turn instruction.
+- **Reward is attributed to the most recent step before a comparison, not the final answer.** A ranking made late in the debate credits (or debits) whatever the compared agent last said before that ranking.
+- **Comparisons are substring-matched.** Only patterns of the form `Agent <int> > Agent <int>` (or `<`) are recognized; ties are not represented.
+- **Self-comparisons are filtered at parse time.** They do not appear in `ParsedResponse.comparisons`, and the count is tracked in `ParsedResponse.self_comparisons_dropped`.
+- **Summarization changes observation prefix structure.** When history is summarized, later observations may no longer be a prefix-extension of earlier observation+action sequences, causing `trajectory_to_data` to split into multiple data items.

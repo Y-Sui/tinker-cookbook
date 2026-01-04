@@ -37,12 +37,15 @@ class MultiAgentDebateEnv(BaseMultiAgentDebateEnv):
         return AGENT_SYSTEM_PROMPT.format(agent_id=self.agent_id)
 
     def _format_turns(self, turns: list[ParsedResponse], num_turns: int) -> str:
-        if not turns:
+        if not turns or num_turns == 0:
             return ""
         lines: list[str] = []
         total_turns = len(turns)
         # Respect history truncation but keep original turn numbering
-        start_idx = max(0, total_turns - num_turns) if num_turns > 0 else 0
+        if num_turns < 0:
+            start_idx = 0
+        else:
+            start_idx = max(0, total_turns - num_turns)
         for idx in range(start_idx, total_turns):
             response = turns[idx]
             display_turn_idx = idx + 1  # 1-based index aligned to the original conversation
@@ -63,7 +66,7 @@ class MultiAgentDebateEnv(BaseMultiAgentDebateEnv):
 
     async def get_conversation_context(self) -> str:
         """Format the conversation context for this agent."""
-        if not self.coordinator.state.agent_responses:
+        if not self.coordinator.state.agent_responses or self.history_turns == 0:
             return ""
 
         question = self.coordinator.state.question

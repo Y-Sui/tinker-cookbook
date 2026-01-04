@@ -285,10 +285,6 @@ class BaseMultiAgentEnvGroupBuilder(EnvGroupBuilder, ABC):
 
             # Process each comparison from this response
             for agent_a, op, agent_b in response.comparisons:
-                # Leave-one-out: skip if author is involved
-                if author_id == agent_a or author_id == agent_b:
-                    continue
-
                 # Validate agent IDs
                 if not (0 <= agent_a < self.num_agents and 0 <= agent_b < self.num_agents):
                     continue
