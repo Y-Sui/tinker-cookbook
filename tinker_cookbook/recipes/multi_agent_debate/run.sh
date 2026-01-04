@@ -191,7 +191,7 @@ python -m tinker_cookbook.recipes.multi_agent_debate.train \
 # Jan 2
 python -m tinker_cookbook.recipes.multi_agent_debate.train \
     model_name="Qwen/Qwen3-8B" \
-    renderer_name="qwen3" \
+    renderer_name="qwen3_disable_thinking" \
     max_tokens=8196 \
     env="verifiable" \
     num_agents=3 \
@@ -199,7 +199,7 @@ python -m tinker_cookbook.recipes.multi_agent_debate.train \
     history_rounds=2 \
     batch_size=16 \
     num_train_datapoints=-1 \
-    epoch=10 \
+    epoch=3 \
     learning_rate=3e-5 \
     use_cosine_lr_schedule=True \
     eval_every=2 \
@@ -218,7 +218,7 @@ python -m tinker_cookbook.recipes.multi_agent_debate.train \
 
 python -m tinker_cookbook.recipes.multi_agent_debate.train \
     model_name="Qwen/Qwen3-8B" \
-    renderer_name="qwen3" \
+    renderer_name="qwen3_disable_thinking" \
     max_tokens=8196 \
     env="verifiable" \
     num_agents=3 \
@@ -226,7 +226,7 @@ python -m tinker_cookbook.recipes.multi_agent_debate.train \
     history_rounds=2 \
     batch_size=16 \
     num_train_datapoints=-1 \
-    epoch=10 \
+    epoch=3 \
     learning_rate=3e-5 \
     use_cosine_lr_schedule=True \
     eval_every=2 \
@@ -268,3 +268,145 @@ python -m tinker_cookbook.recipes.multi_agent_debate.train \
     verifiable_answer_field="answer" \
     verifiable_grader="sympy" \
     wandb_project="CANT"
+
+
+
+
+
+python -m tinker_cookbook.recipes.multi_agent_debate.train \
+    model_name="Qwen/Qwen3-8B" \
+    renderer_name="qwen3_disable_thinking" \
+    max_tokens=8196 \
+    env="verifiable" \
+    num_agents=3 \
+    max_rounds=3 \
+    history_rounds=2 \
+    batch_size=16 \
+    num_train_datapoints=-1 \
+    epoch=3 \
+    learning_rate=3e-5 \
+    use_cosine_lr_schedule=True \
+    eval_every=2 \
+    save_every=10 \
+    max_parallel_evals=64 \
+    summarize_history=False \
+    summarize_model="Qwen/Qwen3-4B-Instruct-2507" \
+    num_groups_to_log=1 \
+    log_full_transcript=True \
+    verifiable_dataset_path=tinker_cookbook/data/aime2025_sample.jsonl \
+    verifiable_problem_field="query" \
+    verifiable_answer_field="answer" \
+    verifiable_grader="sympy" \
+    wandb_project="CANT" 
+
+
+python -m tinker_cookbook.recipes.multi_agent_debate.train \
+    model_name="Qwen/Qwen3-8B" \
+    renderer_name="qwen3_disable_thinking" \
+    max_tokens=8196 \
+    env="verifiable" \
+    num_agents=3 \
+    max_rounds=3 \
+    history_rounds=2 \
+    batch_size=16 \
+    num_train_datapoints=-1 \
+    epoch=3 \
+    learning_rate=3e-5 \
+    use_cosine_lr_schedule=True \
+    eval_every=2 \
+    save_every=10 \
+    max_parallel_evals=64 \
+    summarize_history=False \
+    summarize_model="Qwen/Qwen3-4B-Instruct-2507" \
+    num_groups_to_log=1 \
+    log_full_transcript=True \
+    verifiable_dataset_path=tinker_cookbook/data/aime2024_sample.jsonl \
+    verifiable_problem_field="query" \
+    verifiable_answer_field="answer" \
+    verifiable_grader="sympy" \
+    wandb_project="CANT" 
+
+
+
+
+
+python -m tinker_cookbook.recipes.multi_agent_debate.train \
+    model_name="Qwen/Qwen3-8B" \
+    renderer_name="qwen3" \
+    max_tokens=16392 \
+    env="verifiable" \
+    num_agents=3 \
+    max_rounds=3 \
+    history_rounds=2 \
+    batch_size=16 \
+    num_train_datapoints=-1 \
+    epoch=3 \
+    learning_rate=3e-5 \
+    use_cosine_lr_schedule=True \
+    eval_every=2 \
+    save_every=10 \
+    max_parallel_evals=64 \
+    summarize_history=False \
+    summarize_model="Qwen/Qwen3-4B-Instruct-2507" \
+    num_groups_to_log=1 \
+    log_full_transcript=True \
+    verifiable_dataset_path=tinker_cookbook/data/aime2025_sample.jsonl \
+    verifiable_problem_field="query" \
+    verifiable_answer_field="answer" \
+    verifiable_grader="sympy" \
+    wandb_project="CANT" 
+
+
+
+python -m tinker_cookbook.recipes.multi_agent_debate.train \
+    model_name="Qwen/Qwen3-8B" \
+    renderer_name="qwen3_disable_thinking" \
+    max_tokens=8096 \
+    env="verifiable" \
+    num_agents=3 \
+    max_rounds=3 \
+    history_rounds=2 \
+    batch_size=16 \
+    num_train_datapoints=10 \
+    epoch=1 \
+    learning_rate=3e-5 \
+    use_cosine_lr_schedule=True \
+    eval_every=0 \
+    save_every=10 \
+    max_parallel_evals=64 \
+    summarize_history=True \
+    summarize_model="openai/gpt-4o-mini" \
+    num_groups_to_log=10 \
+    log_full_transcript=True \
+    verifiable_dataset_path=tinker_cookbook/data/aime2025_sample.jsonl \
+    verifiable_problem_field="query" \
+    verifiable_answer_field="answer" \
+    verifiable_grader="sympy" \
+    wandb_project="CANT" 
+
+
+python -m tinker_cookbook.recipes.multi_agent_debate.train \
+    model_name="Qwen/Qwen3-8B" \
+    renderer_name="qwen3" \
+    max_tokens=16392 \
+    env="verifiable" \
+    num_agents=3 \
+    max_rounds=3 \
+    history_rounds=2 \
+    batch_size=16 \
+    num_train_datapoints=-1 \
+    epoch=3 \
+    learning_rate=3e-5 \
+    use_cosine_lr_schedule=True \
+    eval_every=0 \
+    save_every=10 \
+    max_parallel_evals=64 \
+    summarize_history=False \
+    summarize_model="Qwen/Qwen3-4B-Instruct-2507" \
+    num_groups_to_log=1 \
+    log_full_transcript=True \
+    verifiable_dataset_path=tinker_cookbook/data/aime2025_sample.jsonl \
+    verifiable_problem_field="query" \
+    verifiable_answer_field="answer" \
+    verifiable_grader="sympy" \
+    wandb_project="CANT" 

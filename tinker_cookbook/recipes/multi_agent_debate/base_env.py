@@ -13,14 +13,13 @@ Design Pattern:
 """
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Sequence
 
-import tinker
 from tinker import types
 
-from tinker_cookbook.completers import StopCondition, TinkerMessageCompleter
-from tinker_cookbook.renderers import Message, Renderer, ensure_text
+from tinker_cookbook.completers import MessageCompleter, StopCondition
+from tinker_cookbook.renderers import Message, Renderer, get_text_content
 from tinker_cookbook.rl.types import (
     Action,
     Env,
@@ -32,7 +31,7 @@ from tinker_cookbook.rl.types import (
 
 from .coordinator import MultiAgentCoordinator
 from .prompts import SUMMARIZER_SYSTEM_PROMPT
-from .utils import STOP_CONDITION, get_step_idx_before_turn, get_summarizer_stop_condition
+from .utils import STOP_CONDITION, get_step_idx_before_turn
 
 
 @dataclass
@@ -54,7 +53,7 @@ class BaseMultiAgentDebateEnv(Env, ABC):
         self_play: Whether all agents use the same policy (must be True)
         history_turns: Number of recent turns to include in context
         summarize_history: Whether to summarize older conversation history
-        summarize_model: Model to use for summarization (if enabled)
+        _summarizer_policy: Optional pre-created summarizer completer (shared across envs)
         model_name: Name of the base model
     """
 
@@ -64,29 +63,24 @@ class BaseMultiAgentDebateEnv(Env, ABC):
     self_play: bool = True
     history_turns: int = 2
     summarize_history: bool = False
-    summarize_model: str | None = "Qwen/Qwen3-4B-Instruct-2507"
+    _summarizer_policy: MessageCompleter | None = None
     model_name: str | None = None
-    base_url: str | None = None
 
     def __post_init__(self) -> None:
-        """Initialize the environment, including optional summarizer.
+        """Initialize the environment.
+
+        Note: The summarizer policy should be passed in via _summarizer_policy
+        rather than created here to avoid creating multiple API clients.
 
         Subclasses should call super().__post_init__() if they override this.
         """
         assert self.self_play, "Only self-play mode is supported"
 
-        # Initialize summarizer components once if summarization is enabled
-        self._summarizer_policy: TinkerMessageCompleter | None = None
-        if self.summarize_history:
-            service_client = tinker.ServiceClient(base_url=self.base_url)
-            sampling_client = service_client.create_sampling_client(
-                base_model=self.summarize_model or self.model_name
-            )
-            self._summarizer_policy = TinkerMessageCompleter(
-                sampling_client=sampling_client,
-                renderer=self.renderer,
-                max_tokens=892,
-                stop_condition=get_summarizer_stop_condition(self.renderer),
+        # Validate that if summarization is enabled, a summarizer was provided
+        if self.summarize_history and self._summarizer_policy is None:
+            raise ValueError(
+                "summarize_history=True but no _summarizer_policy provided. "
+                "The EnvGroupBuilder should create and pass a shared summarizer."
             )
 
     @property
@@ -133,7 +127,7 @@ class BaseMultiAgentDebateEnv(Env, ABC):
             {"role": "user", "content": history},
         ]
         resp = await self._summarizer_policy(messages)
-        return ensure_text(resp["content"]).strip()
+        return get_text_content(resp).strip()
 
     async def initial_observation(self) -> tuple[Observation, StopCondition]:
         """Get the initial observation for this agent."""
@@ -164,7 +158,7 @@ class BaseMultiAgentDebateEnv(Env, ABC):
 
         # Parse and submit response
         action_message: Message = self.renderer.parse_response(action)[0]
-        action_content = ensure_text(action_message["content"])
+        action_content = get_text_content(action_message)
 
         await self.coordinator.submit_response(
             self.agent_id,
@@ -218,10 +212,55 @@ class BaseMultiAgentEnvGroupBuilder(EnvGroupBuilder, ABC):
     Attributes:
         num_agents: Number of agents in the debate
         renderer: Renderer for converting messages to/from tokens
+        summarize_history: Whether to summarize older conversation history
+        summarize_model: OpenRouter model to use for summarization (e.g., "openai/gpt-4o-mini")
+        model_name: Name of the base model being trained
     """
 
     num_agents: int
     renderer: Renderer
+    summarize_history: bool = field(default=False, kw_only=True)
+    summarize_model: str | None = field(default="openai/gpt-4o-mini", kw_only=True)
+    model_name: str | None = field(default=None, kw_only=True)
+
+    def _create_shared_summarizer(self) -> "MessageCompleter | None":
+        """Create a single shared OpenRouter summarizer for all environments in this group.
+
+        This method should be called once per group to create a summarizer that
+        is shared across all agents, avoiding the creation of multiple API clients.
+
+        Requires OPENROUTER_API_KEY environment variable to be set when summarize_history=True.
+
+        Returns:
+            OpenRouterMessageCompleter if summarize_history=True, None otherwise
+
+        Raises:
+            ValueError: If summarize_history=True but OPENROUTER_API_KEY is not set
+        """
+        if not self.summarize_history:
+            return None
+
+        import os
+
+        from tinker_cookbook.completers import OpenRouterMessageCompleter
+
+        api_key = os.getenv("OPENROUTER_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "OPENROUTER_API_KEY environment variable not set. "
+                "Required for debate history summarization when summarize_history=True. "
+                "Get your API key from https://openrouter.ai/keys and add to .env file."
+            )
+
+        # Default to gpt-4o-mini if no model specified
+        model_name = self.summarize_model or "openai/gpt-4o-mini"
+
+        return OpenRouterMessageCompleter(
+            api_key=api_key,
+            model_name=model_name,
+            max_tokens=1024,
+            temperature=1.0,
+        )
 
     def _populate_stepwise_rewards(
         self,

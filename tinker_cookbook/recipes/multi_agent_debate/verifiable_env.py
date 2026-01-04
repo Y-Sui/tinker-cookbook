@@ -126,12 +126,14 @@ class VerifiableMultiAgentDebateEnv(BaseMultiAgentDebateEnv):
     def get_system_prompt(self) -> str:
         return VERIFIABLE_AGENT_SYSTEM_PROMPT.format(agent_id=self.agent_id)
 
-    def _format_turns(self, turns: list[ParsedResponse]) -> str:
+    def _format_turns(self, turns: list[ParsedResponse], start_offset: int = 0) -> str:
         if not turns:
             return ""
         lines: list[str] = ["--- HISTORY OF PREVIOUS TURNS ---"]
-        for turn_idx, response in enumerate(turns, start=1):
-            lines.append(f"== Turn {turn_idx} (Agent {response.author_id}) ==")
+        for idx, response in enumerate(turns):
+            # Add offset to preserve original turn numbering when history is truncated
+            display_turn_idx = start_offset + idx + 1
+            lines.append(f"== Turn {display_turn_idx} (Agent {response.author_id}) ==")
             lines.append(f"Agent {response.author_id}'s Solution:")
             lines.append(response.solution.rstrip())
             lines.append(f"Agent {response.author_id}'s Evaluation:")
@@ -159,16 +161,22 @@ class VerifiableMultiAgentDebateEnv(BaseMultiAgentDebateEnv):
         if self.history_turns < 0:
             # Show all turns
             recent_turns = turns
+            start_offset = 0
         elif self.history_turns == 0:
             # Show no turns
             recent_turns = []
+            start_offset = 0
         else:
             # Show last N turns
+            total_turns = len(turns)
+            start_offset = max(0, total_turns - self.history_turns)
             recent_turns = (
                 turns[-self.history_turns :] if len(turns) > self.history_turns else turns
             )
 
-        history_text = f"USER QUERY: {question}\n{self._format_turns(recent_turns)}".rstrip()
+        history_text = (
+            f"USER QUERY: {question}\n{self._format_turns(recent_turns, start_offset)}".rstrip()
+        )
 
         return await self._summarize(history_text) if self.summarize_history else history_text
 
@@ -181,13 +189,14 @@ class VerifiableMultiAgentDebateEnv(BaseMultiAgentDebateEnv):
                 f"USER QUERY: {self.coordinator.state.question}\n"
                 f"Agent {self.coordinator.state.current_agent_id}, please proceed with your response.\n\n"
                 'Set <evaluation> to "N/A" and <comparison> to "N/A" as this is the first turn.\n'
-                "Noted that your <solution> must include your final answer in \\boxed{...} format;"
+                "Noted that your <solution> must include your final answer in \\boxed{{...}} format;"
             )
         # Regular turn prompt
         return (
             f"{history}\n\n Agent {self.coordinator.state.current_agent_id}, it is your turn.\n"
             "Please continue the debate by providing your solution, evaluation, and comparison."
-            "Noted that your <solution> must include your final answer in \\boxed{...} format; and the do not include Agent {agent_id} in your comparisons."
+            "Noted that your <solution> must include your final answer in \\boxed{{...}} format;"
+            f"and the do not include Agent {self.coordinator.state.current_agent_id} in your comparisons."
         )
 
 
@@ -214,10 +223,7 @@ class VerifiableMultiAgentEnvGroupBuilder(BaseMultiAgentEnvGroupBuilder):
     max_rounds: int
     self_play: bool
     history_turns: int = 2
-    summarize_history: bool = False
-    summarize_model: str | None = "Qwen/Qwen3-4B-Instruct-2507"
     log_full_transcript: bool = False
-    model_name: str | None = None
     grader: Literal["sympy", "math_verify"] = "sympy"
     grade_timeout: float = 1.0
     eval_mode: Literal["direct", "debate", "both"] = "debate"
@@ -238,6 +244,9 @@ class VerifiableMultiAgentEnvGroupBuilder(BaseMultiAgentEnvGroupBuilder):
         # Debate mode (training or evaluation): multi-turn self-play debate
         max_turns = self.num_agents * self.max_rounds
 
+        # Create shared summarizer once for all agents in this group
+        shared_summarizer = self._create_shared_summarizer()
+
         coordinator = MultiAgentCoordinator(
             question=problem.problem, num_agents=self.num_agents, max_turns=max_turns
         )
@@ -249,7 +258,7 @@ class VerifiableMultiAgentEnvGroupBuilder(BaseMultiAgentEnvGroupBuilder):
                 self_play=True,
                 history_turns=self.history_turns,
                 summarize_history=self.summarize_history,
-                summarize_model=self.summarize_model,
+                _summarizer_policy=shared_summarizer,
                 model_name=self.model_name,
             )
             for i in range(self.num_agents)
@@ -343,7 +352,6 @@ class VerifiableMultiAgentEnvGroupBuilder(BaseMultiAgentEnvGroupBuilder):
                 0.0,  # No final reward (all rewards are already in trajectory steps)
                 {
                     **stepwise_metrics,
-                    **accuracy_metrics[agent_id],
                     f"train_{dataset_name}/format": accuracy_metrics[agent_id]["train_format"],
                     f"train_{dataset_name}/correct": accuracy_metrics[agent_id]["train_correct"],
                     f"train_{dataset_name}/pass@{self.num_agents}": 1.0 if any_correct else 0.0,

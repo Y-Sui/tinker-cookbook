@@ -53,12 +53,12 @@ class MultiAgentDebateEvaluator(SamplingClientEvaluator):
         policy = TinkerTokenCompleter(sampling_client, max_tokens=self.max_tokens)
 
         # Run both evaluation modes
-        direct_metrics = await self._eval_direct_mode(policy)
+        # direct_metrics = await self._eval_direct_mode(policy)
         debate_metrics = await self._eval_debate_mode(policy)
 
         # Combine metrics with mode prefix
         all_metrics = {}
-        all_metrics.update({f"eval/direct/{k}": v for k, v in direct_metrics.items()})
+        # all_metrics.update({f"eval/direct/{k}": v for k, v in direct_metrics.items()})
         all_metrics.update({f"eval/debate/{k}": v for k, v in debate_metrics.items()})
 
         return all_metrics
@@ -209,33 +209,5 @@ class MultiAgentDebateEvaluator(SamplingClientEvaluator):
                     ) / len(problem_to_agents)
 
                     all_metrics[f"{dataset_name}/pass@{self.num_agents}"] = pass_at_k
-
-        # Overall metrics (across all datasets)
-        all_problem_metrics = [
-            m for metrics_list in dataset_to_metrics.values() for m in metrics_list
-        ]
-        if all_problem_metrics:
-            overall_metrics = {}
-            for key in ["format", "correct"]:
-                values = [m[key] for m in all_problem_metrics]
-                overall_metrics[key] = sum(values) / len(values) if values else 0.0
-
-            for key, val in overall_metrics.items():
-                all_metrics[f"overall/{key}"] = val
-
-            # Overall pass@k for debate mode
-            if mode == "debate" and self.num_agents > 1:
-                problem_to_agents_overall = defaultdict(list)
-                for m in all_problem_metrics:
-                    problem_to_agents_overall[m["problem_idx"]].append(m["correct"])
-
-                if problem_to_agents_overall:
-                    pass_at_k_overall = sum(
-                        1
-                        for agent_corrects in problem_to_agents_overall.values()
-                        if any(c > 0.5 for c in agent_corrects)
-                    ) / len(problem_to_agents_overall)
-
-                    all_metrics[f"overall/pass@{self.num_agents}"] = pass_at_k_overall
 
         return all_metrics

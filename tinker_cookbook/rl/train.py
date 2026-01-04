@@ -10,13 +10,13 @@ import time
 from contextlib import contextmanager
 from typing import Any, Callable, Coroutine, Iterable, Iterator, List, Sequence, TypeVar
 
-from tqdm import tqdm
-
 import chz
 import numpy as np
 import tinker
 import torch
 from tinker.types import LossFnType
+from tqdm import tqdm
+
 from tinker_cookbook import checkpoint_utils
 from tinker_cookbook.completers import TinkerTokenCompleter
 from tinker_cookbook.display import colorize_example
@@ -42,8 +42,8 @@ from tinker_cookbook.rl.types import (
 )
 from tinker_cookbook.tokenizer_utils import Tokenizer
 from tinker_cookbook.utils import logtree, ml_log
-from tinker_cookbook.utils.misc_utils import safezip, split_list, timed, all_same
-from tinker_cookbook.utils.trace import scope, update_scope_context, trace_init
+from tinker_cookbook.utils.misc_utils import all_same, safezip, split_list, timed
+from tinker_cookbook.utils.trace import scope, trace_init, update_scope_context
 
 logger = logging.getLogger(__name__)
 
@@ -191,6 +191,7 @@ def compute_cosine_lr(base_lr: float, current_step: int, total_steps: int) -> fl
         Computed learning rate for current step
     """
     import math
+
     if total_steps <= 1:
         return base_lr
     # Cosine decay: lr = base_lr * 0.5 * (1 + cos(π * t / T))
@@ -283,6 +284,8 @@ class Config:
     model_name: str
     max_tokens: int
     temperature: float = 1.0  # Changing sampling temperature is not generally recommended; does not currently play well with KL penalty
+    top_p: float = 1.0
+    top_k: int = 0
     compute_post_kl: bool = False
     evaluator_builders: list[SamplingClientEvaluatorBuilder] = chz.field(default_factory=list)
     lora_rank: int = 32
@@ -427,6 +430,8 @@ async def do_sync_training_with_stream_minibatch(
                     builder,
                     max_tokens=cfg.max_tokens,
                     temperature=cfg.temperature,
+                    top_p=cfg.top_p,
+                    top_k=cfg.top_k,
                     do_remove_constant_reward_groups=cfg.remove_constant_reward_groups,
                     enable_logging=enable_logging,
                 )
@@ -564,6 +569,8 @@ async def do_async_training(
                 env_group_builder,
                 max_tokens=cfg.max_tokens,
                 temperature=cfg.temperature,
+                top_p=cfg.top_p,
+                top_k=cfg.top_k,
                 do_remove_constant_reward_groups=cfg.remove_constant_reward_groups,
             )
             if trajectory_group is None:
@@ -732,10 +739,14 @@ async def do_group_rollout_and_filter_constant_reward(
     env_group_builder: EnvGroupBuilder,
     max_tokens: int,
     temperature: float,
+    top_p: float,
+    top_k: float,
     do_remove_constant_reward_groups: bool,
     enable_logging: bool = True,
 ) -> TrajectoryGroup | None:
-    policy = TinkerTokenCompleter(sampling_client, max_tokens=max_tokens, temperature=temperature)
+    policy = TinkerTokenCompleter(
+        sampling_client, max_tokens=max_tokens, temperature=temperature, top_p=top_p, top_k=top_k
+    )
 
     with logtree.optional_enable_logging(enable_logging):
         trajectory_group = await do_group_rollout(env_group_builder, policy)
@@ -1084,6 +1095,8 @@ async def do_sync_training(
                         builder,
                         max_tokens=cfg.max_tokens,
                         temperature=cfg.temperature,
+                        top_p=cfg.top_p,
+                        top_k=cfg.top_k,
                         do_remove_constant_reward_groups=False,
                         enable_logging=i < cfg.num_groups_to_log,
                     )

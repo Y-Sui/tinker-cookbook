@@ -42,10 +42,10 @@ class EvalConfig:
     grader: Literal["sympy", "math_verify"] = "sympy"
 
     # ============================================================================
-    # History Summarization (optional)
+    # History Summarization (optional) - Uses OpenRouter API
     # ============================================================================
     summarize_history: bool = False
-    summarize_model: str | None = "Qwen/Qwen3-4B-Instruct-2507"
+    summarize_model: str | None = "openai/gpt-4o-mini"
 
     # ============================================================================
     # Logging Configuration

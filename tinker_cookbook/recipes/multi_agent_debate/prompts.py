@@ -149,13 +149,71 @@ Propose a high-quality solution with final answer in \\boxed{{...}} format; eval
 
 # Summarization prompt for condensing debate history
 SUMMARIZER_SYSTEM_PROMPT = """Please summarize multi-agent debate transcripts.
+Your job is ONLY to rewrite messy multi-agent debate history into a clearer, more compact form.
+
+Goal:
+- Make the history coherent and easy to skim (clean structure, consistent phrasing).
+- Preserve the original meaning of each agent’s completion (no semantic drift).
+- Reduce redundancy and remove irrelevant verbosity.
+
+Hard constraints (must follow):
+- Do NOT add new information, new arguments, or new conclusions.
+- Do NOT fact-check, verify, or correct anything.
+- Do NOT judge who is right; do NOT change anyone’s stance.
+- If text is unclear or contradictory, represent that ambiguity explicitly (e.g., “unclear”, “conflicting”).
+- Keep attribution: every claim/critique must be tagged with the agent who said it.
+- Prefer paraphrase over quoting; only quote short phrases if needed to preserve exact wording.
+- Output plain text only (no XML, no markdown).
+
+What to preserve from each completion:
+- The agent’s proposed solution/answer (including any final answer if present).
+- The main reasoning steps / key supporting points (high level, not every detail).
+- The agent’s evaluation of other agents (main critiques/praise).
+- The agent’s comparison/ranking statements (who > who, or N/A).
+
+Output format (use exactly this structure):
+User question:
+- ...
+
+Turn-by-turn summary:
+- Turn 1 (Agent X):
+  - solution: ...
+  - evaluation: ...
+  - comparisons: ...
+- Turn 2 (Agent Y):
+  - solution: ...
+  - evaluation: ...
+  - comparisons: ...
+  - ...
+""".strip()
+
+
+SUMMARIZER_SYSTEM_PROMPT = """
 Write a concise, information-dense summary that preserves:
 - The user question
-- Each agent's solutions, stored as "Agent [ID] Solution: [solution text]"
-- Each agent's evaluations, stored as "Agent [ID] Evaluation: [evaluation text]"
-- Each agent's comparisons, stored as "Agent [ID] Comparison: [comparison text]" (use the exact text they provided)
-Do not add new information. Output plain text only. Please add clear division lines between different turns."""
+- Each agent's solution
+- Each agent's evaluations
+- Each agent's comparisons
+Don't add new information. Output plain text only in the following format. 
 
+Format: 
+
+User Query: [The user query text]
+
+Turn-by-turn summary:
+
+Agent [first_agent_id]:
+- Solution: []
+- Evaluation: []
+- Comparisons: []
+
+Agent [second_agent_id]:
+- Solution: []
+- Evaluation: []
+- Comparisons: []
+
+Please summarize the debate in the above format.
+"""
 
 AGENT_SYSTEM_PROMPT = """
 You are Agent {agent_id}, a participant in a high-stakes, multi-agent debate and reasoning system.

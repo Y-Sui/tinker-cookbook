@@ -40,12 +40,14 @@ class MultiAgentDebateEnv(BaseMultiAgentDebateEnv):
         if not turns:
             return ""
         lines: list[str] = []
-        for turn_idx, response in enumerate(turns, start=1):
-            # Only include the last `num_turns` turns
-            if num_turns > 0 and turn_idx <= len(turns) - num_turns and len(turns) > num_turns:
-                continue
+        total_turns = len(turns)
+        # Respect history truncation but keep original turn numbering
+        start_idx = max(0, total_turns - num_turns) if num_turns > 0 else 0
+        for idx in range(start_idx, total_turns):
+            response = turns[idx]
+            display_turn_idx = idx + 1  # 1-based index aligned to the original conversation
             lines.append(
-                f"== Turn {turn_idx}/{self.coordinator.state.max_turns} (Agent {response.author_id}) ==\n"
+                f"== Turn {display_turn_idx}/{self.coordinator.state.max_turns} (Agent {response.author_id}) ==\n"
             )
             lines.append(f"Agent {response.author_id}'s Solution:")
             lines.append(response.solution.rstrip())
@@ -92,6 +94,7 @@ class MultiAgentDebateEnv(BaseMultiAgentDebateEnv):
             return (
                 f"{history}\n\nQuestion: {self.coordinator.state.question}\n\n"
                 "Please continue the debate by providing your solution, evaluation, and comparison."
+                f"Do not include Agent {self.coordinator.state.current_agent_id} in your comparisons."
             )
 
 
@@ -104,16 +107,16 @@ class MultiAgentEnvGroupBuilder(BaseMultiAgentEnvGroupBuilder):
     max_rounds: int
     self_play: bool
     history_turns: int = 2
-    summarize_history: bool = False
-    summarize_model: str | None = "Qwen/Qwen3-4B-Instruct-2507"
     log_full_transcript: bool = False
-    model_name: str | None = None
 
     async def make_envs(self) -> Sequence[Env]:
         """Create a group of environments for a multi-agent debate."""
         # reuse the questions by cycling if num_train_datapoints > len(questions), we use max_questions to limit len(questions)
         question = self.questions[self.question_index % len(self.questions)]
         max_turns = self.num_agents * self.max_rounds
+
+        # Create shared summarizer once for all agents in this group
+        shared_summarizer = self._create_shared_summarizer()
 
         # All agents share the same coordinator
         coordinator = MultiAgentCoordinator(
@@ -127,7 +130,7 @@ class MultiAgentEnvGroupBuilder(BaseMultiAgentEnvGroupBuilder):
                 self_play=True,
                 history_turns=self.history_turns,
                 summarize_history=self.summarize_history,
-                summarize_model=self.summarize_model,
+                _summarizer_policy=shared_summarizer,
                 model_name=self.model_name,
             )
             for i in range(self.num_agents)

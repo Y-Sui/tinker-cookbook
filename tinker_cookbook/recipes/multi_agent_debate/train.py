@@ -62,10 +62,10 @@ class CLIConfig:
     max_parallel_evals: int = 64  # Max concurrent evaluations (0=unlimited)
 
     # ============================================================================
-    # History Summarization (optional)
+    # History Summarization (optional) - Uses OpenRouter API
     # ============================================================================
     summarize_history: bool = False  # Summarize old debate history
-    summarize_model: str | None = "Qwen/Qwen3-4B-Instruct-2507"  # Model for summarization
+    summarize_model: str | None = "openai/gpt-4o-mini"  # OpenRouter model for summarization
 
     # ============================================================================
     # Logging Configuration
@@ -160,7 +160,7 @@ def build_config(cli_config: CLIConfig) -> train.Config:
 
     # Generate run name and paths
     timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M")
-    run_name = f"{model_name}-renders-{renderer_name}-{dataset_name}-{cli_config.batch_size}groups-{cli_config.epoch}epochs-{timestamp}"
+    run_name = f"{renderer_name}-{dataset_name}-{cli_config.batch_size}groups-{cli_config.epoch}epochs-{cli_config.max_tokens}tokens-{timestamp}"
     log_path = cli_config.log_path or f"~/tinker/multi-agent-debate/{run_name}"
 
     # W&B configuration (support env vars)
