@@ -91,6 +91,12 @@ class CLIConfig:
     max_questions: int = -1  # Max problems to load (-1 = all)
 
     # ============================================================================
+    # Reward System Configuration
+    # ============================================================================
+    enable_reward_decay: bool = True  # Distribute rewards across all steps with exponential decay
+    enable_format_penalty: bool = True  # Penalize missing/invalid comparisons
+
+    # ============================================================================
     # Weights & Biases Configuration
     # ============================================================================
     wandb_project: str | None = None  # W&B project (or use WANDB_PROJECT env var)
@@ -118,6 +124,8 @@ def _build_verifiable_dataset_builder(
         answer_field=cli_config.verifiable_answer_field,
         grader=cli_config.verifiable_grader,
         max_questions=cli_config.max_questions,
+        enable_reward_decay=cli_config.enable_reward_decay,
+        enable_format_penalty=cli_config.enable_format_penalty,
     )
 
 
@@ -141,6 +149,8 @@ def _build_non_verifiable_dataset_builder(
         dataset_path=cli_config.non_verifiable_dataset_path,
         problem_field=cli_config.non_verifiable_problem_field,
         max_questions=cli_config.max_questions,
+        enable_reward_decay=cli_config.enable_reward_decay,
+        enable_format_penalty=cli_config.enable_format_penalty,
     )
 
 

@@ -33,6 +33,34 @@ from .coordinator import MultiAgentCoordinator
 from .prompts import SUMMARIZER_SYSTEM_PROMPT
 from .utils import STOP_CONDITION, get_step_idx_before_turn
 
+# Reward system constants
+REWARD_DECAY_GAMMA = 0.7  # Exponential decay factor for distributing rewards across steps
+FORMAT_PENALTY = -2.0     # Penalty for missing/invalid comparisons
+FORMAT_EXEMPT_TURNS = 2   # Turns 0-1 exempt from format checking
+
+
+def _compute_decay_weights(num_steps: int, gamma: float) -> list[float]:
+    """Compute normalized exponential decay weights for reward distribution.
+
+    Args:
+        num_steps: Number of steps in the trajectory
+        gamma: Decay factor (0 < gamma <= 1)
+
+    Returns:
+        Normalized weights where sum = 1.0.
+        weights[0] corresponds to earliest step (most decay)
+        weights[-1] corresponds to latest step (least decay, = 1.0 before normalization)
+
+    Example:
+        >>> _compute_decay_weights(3, 0.7)
+        [0.224, 0.320, 0.456]  # weights = [0.49, 0.70, 1.00] normalized
+    """
+    if num_steps == 0:
+        return []
+    weights = [gamma ** (num_steps - 1 - i) for i in range(num_steps)]
+    total = sum(weights)
+    return [w / total for w in weights]
+
 
 @dataclass
 class BaseMultiAgentDebateEnv(Env, ABC):
@@ -223,6 +251,10 @@ class BaseMultiAgentEnvGroupBuilder(EnvGroupBuilder, ABC):
     summarize_model: str | None = field(default="openai/gpt-4o-mini", kw_only=True)
     model_name: str | None = field(default=None, kw_only=True)
 
+    # Reward system configuration
+    enable_reward_decay: bool = field(default=True, kw_only=True)
+    enable_format_penalty: bool = field(default=True, kw_only=True)
+
     def _create_shared_summarizer(self) -> "MessageCompleter | None":
         """Create a single shared OpenRouter summarizer for all environments in this group.
 
@@ -270,6 +302,11 @@ class BaseMultiAgentEnvGroupBuilder(EnvGroupBuilder, ABC):
         """
         Modify trajectories in-place to assign step-wise rewards based on comparisons.
 
+        Enhanced with:
+        - Reward normalization by total valid comparisons
+        - Exponential decay distribution across all agent steps (if enable_reward_decay=True)
+        - Format penalties for missing comparisons (if enable_format_penalty=True)
+
         Returns summary metrics.
         """
         env0 = env_group[0]
@@ -279,10 +316,14 @@ class BaseMultiAgentEnvGroupBuilder(EnvGroupBuilder, ABC):
         else:
             raise ValueError(f"Environment {type(env0)} does not have a coordinator")
 
-        # Process each response in order
-        for turn_idx, response in enumerate(coordinator.state.agent_responses):
-            author_id = response.author_id
+        # Initialize accumulators for each agent
+        agent_comparison_rewards = [0.0 for _ in range(self.num_agents)]
+        agent_format_rewards = [0.0 for _ in range(self.num_agents)]
+        total_valid_comparisons = 0
+        missing_comparisons = 0
 
+        # Step 1: Accumulate comparison rewards
+        for turn_idx, response in enumerate(coordinator.state.agent_responses):
             # Process each comparison from this response
             for agent_a, op, agent_b in response.comparisons:
                 # Validate agent IDs
@@ -302,21 +343,60 @@ class BaseMultiAgentEnvGroupBuilder(EnvGroupBuilder, ABC):
                 if agent_a_step_idx < 0 or agent_b_step_idx < 0:
                     continue
 
-                # Assign rewards (mutate trajectories in-place)
+                # Accumulate rewards (don't assign to trajectory yet)
                 if op == ">":
-                    trajectory_group[agent_a].transitions[agent_a_step_idx].reward += 1.0
-                    trajectory_group[agent_b].transitions[agent_b_step_idx].reward -= 1.0
+                    agent_comparison_rewards[agent_a] += 1.0
+                    agent_comparison_rewards[agent_b] -= 1.0
                 elif op == "<":
-                    trajectory_group[agent_a].transitions[agent_a_step_idx].reward -= 1.0
-                    trajectory_group[agent_b].transitions[agent_b_step_idx].reward += 1.0
+                    agent_comparison_rewards[agent_a] -= 1.0
+                    agent_comparison_rewards[agent_b] += 1.0
 
-        # Compute summary metrics
-        total_comparisons_used = 0
-        for trajectory in trajectory_group:
-            for transition in trajectory.transitions:
-                if transition.reward != 0.0:
-                    total_comparisons_used += abs(transition.reward)
+                total_valid_comparisons += 1
 
+        # Step 2: Accumulate format rewards (if enabled)
+        if self.enable_format_penalty:
+            for turn_idx, response in enumerate(coordinator.state.agent_responses):
+                # Skip exempt turns (0 and 1)
+                if turn_idx < FORMAT_EXEMPT_TURNS:
+                    continue
+
+                author_id = response.author_id
+
+                # Check if this response has valid comparisons
+                if len(response.comparisons) == 0:
+                    agent_format_rewards[author_id] += FORMAT_PENALTY
+                    missing_comparisons += 1
+
+        # Step 3: Compute normalization factors
+        total_eligible_turns = max(0, len(coordinator.state.agent_responses) - FORMAT_EXEMPT_TURNS)
+
+        comparison_norm = 1.0 / total_valid_comparisons if total_valid_comparisons > 0 else 1.0
+        format_norm = 1.0 / total_eligible_turns if total_eligible_turns > 0 else 1.0
+
+        # Step 4: Normalize and distribute rewards to trajectory steps
+        for agent_id in range(self.num_agents):
+            trajectory = trajectory_group[agent_id]
+            num_steps = len(trajectory.transitions)
+
+            if num_steps == 0:
+                continue  # No steps to assign rewards to
+
+            # Compute total normalized reward for this agent
+            normalized_comparison_reward = agent_comparison_rewards[agent_id] * comparison_norm
+            normalized_format_reward = agent_format_rewards[agent_id] * format_norm
+            total_reward = normalized_comparison_reward + normalized_format_reward
+
+            if self.enable_reward_decay:
+                # Distribute reward across all steps with exponential decay
+                decay_weights = _compute_decay_weights(num_steps, REWARD_DECAY_GAMMA)
+                for step_idx, weight in enumerate(decay_weights):
+                    trajectory.transitions[step_idx].reward += total_reward * weight
+            else:
+                # Legacy behavior: assign all reward to most recent step
+                trajectory.transitions[-1].reward += total_reward
+
+        # Step 5: Return summary metrics
         return {
-            "stepwise_comparisons_used": total_comparisons_used,
+            "stepwise_comparisons_used": total_valid_comparisons,
+            "missing_comparisons": missing_comparisons,
         }
