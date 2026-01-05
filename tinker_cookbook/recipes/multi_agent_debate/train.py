@@ -171,11 +171,11 @@ def build_config(cli_config: CLIConfig) -> train.Config:
     # Generate run name and paths
     timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M")
     run_name = f"{renderer_name}-{dataset_name}-{cli_config.batch_size}groups-{cli_config.epoch}epochs-{cli_config.max_tokens}tokens-{timestamp}"
-    log_path = cli_config.log_path or f"~/tinker/multi-agent-debate/{run_name}"
 
     # W&B configuration (support env vars)
     wandb_project = cli_config.wandb_project or os.environ.get("WANDB_PROJECT")
     wandb_name = cli_config.wandb_name or os.environ.get("WANDB_NAME") or run_name
+    log_path = cli_config.log_path or f"~/tinker/multi-agent-debate/{wandb_name}"
 
     # Build dataset based on environment type
     if cli_config.env == "verifiable":

@@ -35,8 +35,8 @@ from .utils import STOP_CONDITION, get_step_idx_before_turn
 
 # Reward system constants
 REWARD_DECAY_GAMMA = 0.7  # Exponential decay factor for distributing rewards across steps
-FORMAT_PENALTY = -2.0     # Penalty for missing/invalid comparisons
-FORMAT_EXEMPT_TURNS = 2   # Turns 0-1 exempt from format checking
+FORMAT_PENALTY = -0.5  # Penalty for missing/invalid comparisons
+FORMAT_EXEMPT_TURNS = 2  # Turns 0-1 exempt from format checking
 
 
 def _compute_decay_weights(num_steps: int, gamma: float) -> list[float]:
