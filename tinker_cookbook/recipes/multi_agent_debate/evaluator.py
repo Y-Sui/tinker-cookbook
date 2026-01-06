@@ -159,7 +159,13 @@ class MultiAgentDebateEvaluator(SamplingClientEvaluator):
             return await do_group_rollout(builder, policy)
 
     def _compute_metrics(self, trajectory_groups, mode: str) -> dict[str, float]:
-        """Compute per-dataset metrics and pass@k style metrics."""
+        """Compute per-dataset metrics and multi-agent aggregation metrics.
+
+        Multi-agent metrics (for debate mode with k agents):
+        - pass@k: At least one agent produced the correct answer (optimistic aggregation)
+        - avg@k: Average accuracy across all k agents (mean performance)
+        - cons@k: Majority of agents produced the correct answer (consensus/voting)
+        """
         # Group trajectories by dataset
         dataset_to_metrics = defaultdict(list)
 
@@ -203,7 +209,9 @@ class MultiAgentDebateEvaluator(SamplingClientEvaluator):
                 if problem_to_agents:
                     num_problems = len(problem_to_agents)
 
-                    # pass@k: at least one agent got it right
+                    # pass@k: Optimistic aggregation - at least one agent got it right
+                    # Measures the probability that the best answer among k agents is correct
+                    # Example: With 3 agents, if any one is correct, problem counts as solved
                     pass_at_k = (
                         sum(
                             1
@@ -214,8 +222,10 @@ class MultiAgentDebateEvaluator(SamplingClientEvaluator):
                     )
                     all_metrics[f"{dataset_name}/pass@{self.num_agents}"] = pass_at_k
 
-                    # avg@k: average accuracy across all agents
-                    # (mean of per-problem average correctness)
+                    # avg@k: Mean accuracy across all k agents
+                    # Measures the average quality of agent responses
+                    # Example: With 3 agents (2 correct, 1 wrong), avg@3 = 2/3 = 0.667
+                    # This is computed as: mean over problems of (mean accuracy per problem)
                     avg_at_k = (
                         sum(
                             sum(agent_corrects) / len(agent_corrects)
@@ -225,8 +235,10 @@ class MultiAgentDebateEvaluator(SamplingClientEvaluator):
                     )
                     all_metrics[f"{dataset_name}/avg@{self.num_agents}"] = avg_at_k
 
-                    # cons@k: consensus accuracy - majority of agents got it right
-                    # (more than half of the agents are correct)
+                    # cons@k: Consensus accuracy - majority voting among k agents
+                    # Measures when more than half of the agents agree on the correct answer
+                    # Example: With 3 agents, at least 2 must be correct (> 3/2 = 1.5)
+                    # More robust than pass@k but less strict than requiring all agents correct
                     cons_at_k = (
                         sum(
                             1

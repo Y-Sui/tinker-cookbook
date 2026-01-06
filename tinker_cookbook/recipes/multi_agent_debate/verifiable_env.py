@@ -343,8 +343,14 @@ class VerifiableMultiAgentEnvGroupBuilder(BaseMultiAgentEnvGroupBuilder):
                 }
             )
 
-        # Compute pass@k: did any agent get it correct?
+        # Compute multi-agent aggregation metrics:
+        # - pass@k: Optimistic - at least one agent got it correct (best-of-k)
+        # - avg@k: Mean accuracy across all k agents (average quality)
+        # - cons@k: Consensus - majority of agents got it correct (voting)
         any_correct = any(m["train_correct"] > 0.5 for m in accuracy_metrics)
+        avg_correct = sum(m["train_correct"] for m in accuracy_metrics) / len(accuracy_metrics)
+        num_correct = sum(1 for m in accuracy_metrics if m["train_correct"] > 0.5)
+        consensus_correct = num_correct > len(accuracy_metrics) / 2  # More than half correct
 
         # Return metrics for each agent
         return [
@@ -355,6 +361,10 @@ class VerifiableMultiAgentEnvGroupBuilder(BaseMultiAgentEnvGroupBuilder):
                     f"train_{dataset_name}/format": accuracy_metrics[agent_id]["train_format"],
                     f"train_{dataset_name}/correct": accuracy_metrics[agent_id]["train_correct"],
                     f"train_{dataset_name}/pass@{self.num_agents}": 1.0 if any_correct else 0.0,
+                    f"train_{dataset_name}/avg@{self.num_agents}": avg_correct,
+                    f"train_{dataset_name}/cons@{self.num_agents}": 1.0
+                    if consensus_correct
+                    else 0.0,
                 },
             )
             for agent_id in range(self.num_agents)
