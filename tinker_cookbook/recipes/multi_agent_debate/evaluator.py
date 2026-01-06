@@ -192,7 +192,7 @@ class MultiAgentDebateEvaluator(SamplingClientEvaluator):
                 for key, val in dataset_metrics.items():
                     all_metrics[f"{dataset_name}/{key}"] = val
 
-        # Pass@k metrics: whether ANY agent in debate got it correct
+        # Pass@k, avg@k, cons@k metrics for debate mode
         if mode == "debate" and self.num_agents > 1:
             for dataset_name, metrics_list in dataset_to_metrics.items():
                 # Group by problem_idx
@@ -200,14 +200,41 @@ class MultiAgentDebateEvaluator(SamplingClientEvaluator):
                 for m in metrics_list:
                     problem_to_agents[m["problem_idx"]].append(m["correct"])
 
-                # Compute pass@k: at least one agent got it right
                 if problem_to_agents:
-                    pass_at_k = sum(
-                        1
-                        for agent_corrects in problem_to_agents.values()
-                        if any(c > 0.5 for c in agent_corrects)
-                    ) / len(problem_to_agents)
+                    num_problems = len(problem_to_agents)
 
+                    # pass@k: at least one agent got it right
+                    pass_at_k = (
+                        sum(
+                            1
+                            for agent_corrects in problem_to_agents.values()
+                            if any(c > 0.5 for c in agent_corrects)
+                        )
+                        / num_problems
+                    )
                     all_metrics[f"{dataset_name}/pass@{self.num_agents}"] = pass_at_k
+
+                    # avg@k: average accuracy across all agents
+                    # (mean of per-problem average correctness)
+                    avg_at_k = (
+                        sum(
+                            sum(agent_corrects) / len(agent_corrects)
+                            for agent_corrects in problem_to_agents.values()
+                        )
+                        / num_problems
+                    )
+                    all_metrics[f"{dataset_name}/avg@{self.num_agents}"] = avg_at_k
+
+                    # cons@k: consensus accuracy - majority of agents got it right
+                    # (more than half of the agents are correct)
+                    cons_at_k = (
+                        sum(
+                            1
+                            for agent_corrects in problem_to_agents.values()
+                            if sum(1 for c in agent_corrects if c > 0.5) > len(agent_corrects) / 2
+                        )
+                        / num_problems
+                    )
+                    all_metrics[f"{dataset_name}/cons@{self.num_agents}"] = cons_at_k
 
         return all_metrics
