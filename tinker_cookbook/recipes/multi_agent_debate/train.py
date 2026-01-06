@@ -56,7 +56,7 @@ class CLIConfig:
     num_train_datapoints: int = 1024  # Training samples per epoch
     epoch: int = 1  # Number of times to cycle through the dataset
     learning_rate: float = 3e-5
-    use_cosine_lr_schedule: bool = True  # Use cosine LR decay (base_lr → 0)
+    use_cosine_lr_schedule: bool = False  # Use cosine LR decay (base_lr → 0)
     eval_every: int = 50  # Evaluate every N batches (larger for TTL)
     save_every: int = 100  # Save checkpoint every N batches
     max_parallel_evals: int = 64  # Max concurrent evaluations (0=unlimited)
