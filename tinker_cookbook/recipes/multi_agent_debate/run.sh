@@ -460,9 +460,9 @@ python -m tinker_cookbook.recipes.multi_agent_debate.train \
     history_rounds=2 \
     batch_size=16 \
     num_train_datapoints=-1 \
-    epoch=3 \
+    epoch=6 \
     learning_rate=3e-5 \
-    eval_every=2 \
+    eval_every=5 \
     save_every=10 \
     max_parallel_evals=64 \
     summarize_history=False \
@@ -474,6 +474,36 @@ python -m tinker_cookbook.recipes.multi_agent_debate.train \
     verifiable_answer_field="answer" \
     verifiable_grader="sympy" \
     wandb_project="CANT-01-05" \
-    wandb_name="Qwen3-8B-decay-format-penalty-thinking-16392-smaller-penalty" \
+    wandb_name="Qwen3-8B-decay-format-penalty-thinking-16392-smaller-penalty-no-rl-0107" \
+    enable_reward_decay=True \
+    enable_format_penalty=True
+
+
+# 01-07
+python -m tinker_cookbook.recipes.multi_agent_debate.train \
+    model_name=Qwen/Qwen3-8B \
+    renderer_name=qwen3 \
+    max_tokens=8096 \
+    env=verifiable \
+    num_agents=3 \
+    max_rounds=3 \
+    history_rounds=2 \
+    batch_size=16 \
+    num_train_datapoints=-1 \
+    epoch=3 \
+    learning_rate=3e-5 \
+    eval_every=2 \
+    save_every=10 \
+    max_parallel_evals=64 \
+    summarize_history=False \
+    summarize_model=Qwen/Qwen3-4B-Instruct-2507 \
+    num_groups_to_log=1 \
+    log_full_transcript=True \
+    verifiable_dataset_path=tinker_cookbook/data/aime2025_sample.jsonl \
+    verifiable_problem_field=query \
+    verifiable_answer_field=answer \
+    verifiable_grader=sympy \
+    wandb_project=CANT-01-05 \
+    wandb_name=Qwen3-8B-decay-format-penalty-thinking-8096-01-11 \
     enable_reward_decay=True \
     enable_format_penalty=True

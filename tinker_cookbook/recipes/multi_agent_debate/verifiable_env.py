@@ -130,16 +130,21 @@ class VerifiableMultiAgentDebateEnv(BaseMultiAgentDebateEnv):
         if not turns:
             return ""
         lines: list[str] = ["--- HISTORY OF PREVIOUS TURNS ---"]
+        num_agents = self.coordinator.state.num_agents
         for idx, response in enumerate(turns):
             # Add offset to preserve original turn numbering when history is truncated
             display_turn_idx = start_offset + idx + 1
-            lines.append(f"== Turn {display_turn_idx} (Agent {response.author_id}) ==")
-            lines.append(f"Agent {response.author_id}'s Solution:")
+            # Calculate round number (1-indexed) for disambiguation
+            round_num = (display_turn_idx - 1) // num_agents + 1
+            agent_label = f"Agent {response.author_id} (R{round_num})"
+
+            lines.append(f"== Turn {display_turn_idx} ({agent_label}) ==")
+            lines.append(f"{agent_label}'s Solution:")
             lines.append(response.solution.rstrip())
-            lines.append(f"Agent {response.author_id}'s Evaluation:")
+            lines.append(f"{agent_label}'s Evaluation:")
             lines.append(response.evaluation.rstrip())
             if response.comparison_text:
-                lines.append(f"Agent {response.author_id}'s Comparison:")
+                lines.append(f"{agent_label}'s Comparison:")
                 lines.append(response.comparison_text.rstrip())
             lines.append("")
         lines.append("--- END OF HISTORY ---\n")
@@ -180,23 +185,47 @@ class VerifiableMultiAgentDebateEnv(BaseMultiAgentDebateEnv):
 
         return await self._summarize(history_text) if self.summarize_history else history_text
 
+    def _get_context_header(self) -> str:
+        """Generate a context header to disambiguate agent references across rounds."""
+        turn_idx = self.coordinator.state.current_turn
+        num_agents = self.coordinator.state.num_agents
+        current_round = turn_idx // num_agents + 1
+        agent_id = self.coordinator.state.current_agent_id
+
+        if current_round <= 1:
+            return ""
+
+        # Build context header for rounds > 1
+        return (
+            f"[CONTEXT: You are Agent {agent_id}, Round {current_round}. "
+            f"When you see 'Agent {agent_id} (R{current_round - 1})' in history, "
+            f"that is a DIFFERENT agent from a previous round, not you. "
+            f"Agents do NOT self-evaluate by design - this is correct behavior.]\n\n"
+        )
+
     async def get_observation_string(self) -> str:
         history = await self.get_conversation_context()
         turn_idx = self.coordinator.state.current_turn
+        num_agents = self.coordinator.state.num_agents
+        current_round = turn_idx // num_agents + 1
+        agent_id = self.coordinator.state.current_agent_id
+
         # First turn prompt
         if turn_idx == 0:
             return (
                 f"USER QUERY: {self.coordinator.state.question}\n"
-                f"Agent {self.coordinator.state.current_agent_id}, please proceed with your response.\n\n"
+                f"Agent {agent_id}, please proceed with your response.\n\n"
                 'Set <evaluation> to "N/A" and <comparison> to "N/A" as this is the first turn.\n'
                 "Noted that your <solution> must include your final answer in \\boxed{{...}} format;"
             )
-        # Regular turn prompt
+
+        # Regular turn prompt with context header
+        context_header = self._get_context_header()
         return (
-            f"{history}\n\n Agent {self.coordinator.state.current_agent_id}, it is your turn.\n"
+            f"{context_header}{history}\n\n Agent {agent_id} (R{current_round}), it is your turn.\n"
             "Please continue the debate by providing your solution, evaluation, and comparison."
             "Noted that your <solution> must include your final answer in \\boxed{{...}} format;"
-            f"and the do not include Agent {self.coordinator.state.current_agent_id} in your comparisons."
+            f"and do not include Agent {agent_id} in your comparisons."
         )
 
 

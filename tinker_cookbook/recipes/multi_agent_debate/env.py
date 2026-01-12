@@ -41,6 +41,7 @@ class MultiAgentDebateEnv(BaseMultiAgentDebateEnv):
             return ""
         lines: list[str] = []
         total_turns = len(turns)
+        num_agents = self.coordinator.state.num_agents
         # Respect history truncation but keep original turn numbering
         if num_turns < 0:
             start_idx = 0
@@ -49,17 +50,21 @@ class MultiAgentDebateEnv(BaseMultiAgentDebateEnv):
         for idx in range(start_idx, total_turns):
             response = turns[idx]
             display_turn_idx = idx + 1  # 1-based index aligned to the original conversation
+            # Calculate round number (1-indexed) for disambiguation
+            round_num = (display_turn_idx - 1) // num_agents + 1
+            agent_label = f"Agent {response.author_id} (R{round_num})"
+
             lines.append(
-                f"== Turn {display_turn_idx}/{self.coordinator.state.max_turns} (Agent {response.author_id}) ==\n"
+                f"== Turn {display_turn_idx}/{self.coordinator.state.max_turns} ({agent_label}) ==\n"
             )
-            lines.append(f"Agent {response.author_id}'s Solution:")
+            lines.append(f"{agent_label}'s Solution:")
             lines.append(response.solution.rstrip())
             lines.append("\n")
-            lines.append(f"Agent {response.author_id}'s Evaluation:")
+            lines.append(f"{agent_label}'s Evaluation:")
             lines.append(response.evaluation.rstrip())
             lines.append("\n")
             if response.comparison_text:
-                lines.append(f"Agent {response.author_id}'s Comparison:")
+                lines.append(f"{agent_label}'s Comparison:")
                 lines.append(response.comparison_text.rstrip())
             lines.append("== End of Turn ==\n")
         return "\n".join(lines).rstrip()
@@ -81,10 +86,32 @@ class MultiAgentDebateEnv(BaseMultiAgentDebateEnv):
 
         return await self._summarize(history_turns) if self.summarize_history else history_turns
 
+    def _get_context_header(self) -> str:
+        """Generate a context header to disambiguate agent references across rounds."""
+        turn_idx = self.coordinator.state.current_turn
+        num_agents = self.coordinator.state.num_agents
+        current_round = turn_idx // num_agents + 1
+        agent_id = self.coordinator.state.current_agent_id
+
+        if current_round <= 1:
+            return ""
+
+        # Build context header for rounds > 1
+        return (
+            f"[CONTEXT: You are Agent {agent_id}, Round {current_round}. "
+            f"When you see 'Agent {agent_id} (R{current_round - 1})' in history, "
+            f"that is a DIFFERENT agent from a previous round, not you. "
+            f"Agents do NOT self-evaluate by design - this is correct behavior.]\n\n"
+        )
+
     async def get_observation_string(self) -> str:
         """Get the observation string for this agent."""
         history = await self.get_conversation_context()
         turn_idx = self.coordinator.state.current_turn
+        num_agents = self.coordinator.state.num_agents
+        current_round = turn_idx // num_agents + 1
+        agent_id = self.coordinator.state.current_agent_id
+
         # intermission prompt for first turn
         if turn_idx == 0:
             return (
@@ -93,11 +120,12 @@ class MultiAgentDebateEnv(BaseMultiAgentDebateEnv):
                 'Set <evaluation> to "N/A" and <comparison> to "N/A".'
             )
         else:
-            # regular turn prompt
+            # regular turn prompt with context header
+            context_header = self._get_context_header()
             return (
-                f"{history}\n\nQuestion: {self.coordinator.state.question}\n\n"
-                "Please continue the debate by providing your solution, evaluation, and comparison."
-                f"Do not include Agent {self.coordinator.state.current_agent_id} in your comparisons."
+                f"{context_header}{history}\n\nQuestion: {self.coordinator.state.question}\n\n"
+                f"Agent {agent_id} (R{current_round}), please continue the debate by providing your solution, evaluation, and comparison. "
+                f"Do not include Agent {agent_id} in your comparisons."
             )
 
 

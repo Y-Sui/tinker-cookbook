@@ -1,5 +1,17 @@
 # Multi-Agent Debate: Current Implementation (Scope → Details → Math)
 
+## Plain-language summary
+
+A single language model is trained (or evaluated) in self-play by having it impersonate multiple “agents” who debate the same question over several rounds. Agents take turns. On each turn an agent must produce three parts: (1) a proposed solution, (2) a critique/meta-critique of the discussion, and (3) pairwise comparisons that rank other agents (e.g., “Agent 0 > Agent 2”).
+
+The core learning signal comes from these peer comparisons rather than from task correctness. Every time an agent states a comparison “A > B”, the system treats it as a win for A and a loss for B. Across the whole debate, each agent accumulates positive and negative comparison points based on how often they are ranked above or below others. Optionally, agents are also penalized when they fail to provide any valid comparisons on turns where comparisons are expected (with early turns exempt to allow “warm-up”).
+
+Rewards are not given immediately while the agents are generating text. Instead, the full transcript is collected first, then rewards are computed afterward from all comparisons and penalties. The total reward per agent is normalized so that debates with many comparisons don’t automatically dominate training compared to debates with few comparisons. That normalized per-agent reward is then distributed over that agent’s multiple turns: either spread across all of their turns using exponentially decayed weights (more weight on later turns), or assigned entirely to the final turn (legacy behavior).
+
+For optimization, each agent’s total return is converted into an advantage by subtracting the average return within the same debate group (so training focuses on relative performance between agents on the same prompt). That advantage is applied to the tokens the agent generated, yielding a token-level policy-gradient style update with an importance-sampling correction between the policy that generated the data and the current policy.
+
+There are two variants. In the non-verifiable version, the only training signal is the peer-comparison mechanism. In the verifiable math version, training is still driven by comparisons, but the system also checks whether each agent’s final answer matches ground truth (with a required boxed-answer format) and logs additional metrics such as best-of-N success (at least one agent correct), average correctness across agents, and majority-consensus correctness. The verifiable setup can also be run in evaluation modes that either perform a full debate or do a single direct answer attempt.
+
 This note documents the *current* behavior (including non-obvious edge cases) of the multi-agent debate recipe as implemented under `tinker_cookbook/recipes/multi_agent_debate/`.
 
 It is written to be copy/paste-able as “implementation details / methods” for a paper, but it intentionally stays faithful to the code, not an idealized design.
@@ -169,9 +181,26 @@ The OpenRouter self-play script (`inference.py`) always passes `stop=["</compari
 
 During env stepping (`BaseMultiAgentDebateEnv.step`), the immediate per-step reward is always `0.0`.
 
-After all rollouts complete, the group builder mutates the collected trajectories in-place using the full conversation transcript (`ParsedResponse` list) to assign **step-wise rewards**. There is no additional “final reward” in this recipe: the group builder returns final rewards of `0.0` for every agent, and all learning signal comes from the step rewards.
+After all rollouts complete, the group builder mutates the collected trajectories in-place using the full conversation transcript (`ParsedResponse` list) to assign **step-wise rewards**. There is no additional "final reward" in this recipe: the group builder returns final rewards of `0.0` for every agent, and all learning signal comes from the step rewards.
 
-### Comparison events
+### Reward system configuration
+
+The reward system is controlled by two configuration flags (`base_env.py`):
+
+- `enable_reward_decay` (default: `True`): if enabled, distributes accumulated rewards across all agent steps using exponential decay weights; if disabled, assigns all accumulated reward to the agent's final step (legacy behavior).
+- `enable_format_penalty` (default: `True`): if enabled, penalizes agents who fail to produce valid comparisons in eligible turns.
+
+Constants (defined in `base_env.py`):
+
+- `REWARD_DECAY_GAMMA = 0.7`: exponential decay factor for distributing rewards.
+- `FORMAT_PENALTY = -0.5`: penalty applied per missing comparison.
+- `FORMAT_EXEMPT_TURNS = 2`: turns 0 and 1 are exempt from format checking.
+
+### Reward computation pipeline
+
+The reward shaper (`BaseMultiAgentEnvGroupBuilder._populate_stepwise_rewards`) proceeds in five steps:
+
+#### Step 1: Accumulate comparison rewards
 
 For one debate instance (one question/problem), define the set of authored comparison events:
 \[
@@ -193,9 +222,81 @@ Events are ignored if:
 - \(\operatorname{op} \notin \{>,<\}\),
 - one of \(a\) or \(b\) has not yet acted at least once *before* turn \(t\) (details below).
 
-### Which step gets credited? “Most recent action before the comparison”
+Each agent maintains a running **comparison reward accumulator** \(\rho_i^\text{comp}\) initialized to 0. For each valid comparison \((u, t, a, \operatorname{op}, b)\):
 
-Each agent \(i\) has one transition per cycle. The reward shaper attributes each comparison to the compared agents’ **most recent step strictly before** the current authored turn.
+- If \(\operatorname{op} = >\): \(\rho_a^\text{comp} \mathrel{+}= 1\), \(\rho_b^\text{comp} \mathrel{-}= 1\).
+- If \(\operatorname{op} = <\): \(\rho_a^\text{comp} \mathrel{-}= 1\), \(\rho_b^\text{comp} \mathrel{+}= 1\).
+
+Count \(C_\text{valid}\) = number of valid comparisons processed.
+
+#### Step 2: Accumulate format penalties (if enabled)
+
+If `enable_format_penalty=True`, each agent maintains a **format penalty accumulator** \(\rho_i^\text{fmt}\) initialized to 0.
+
+For each turn \(t \ge \texttt{FORMAT\_EXEMPT\_TURNS}\):
+- Let \(u\) be the author of turn \(t\).
+- If `ParsedResponse.comparisons` for turn \(t\) is empty: \(\rho_u^\text{fmt} \mathrel{+}= \texttt{FORMAT\_PENALTY}\).
+
+Count \(M\) = number of missing comparisons (turns with empty comparison lists).
+
+#### Step 3: Normalize accumulated rewards
+
+Let \(T_\text{eligible} = \max(0, T_\text{total} - \texttt{FORMAT\_EXEMPT\_TURNS})\) be the number of turns eligible for format checking.
+
+Define normalization factors:
+\[
+\alpha_\text{comp} = \begin{cases}
+1/C_\text{valid} & \text{if } C_\text{valid} > 0, \\
+1 & \text{otherwise},
+\end{cases}
+\quad
+\alpha_\text{fmt} = \begin{cases}
+1/T_\text{eligible} & \text{if } T_\text{eligible} > 0, \\
+1 & \text{otherwise}.
+\end{cases}
+\]
+
+For each agent \(i\), compute the **normalized total reward**:
+\[
+\hat{r}_i = \rho_i^\text{comp} \cdot \alpha_\text{comp} + \rho_i^\text{fmt} \cdot \alpha_\text{fmt}.
+\]
+
+#### Step 4: Distribute rewards to trajectory steps
+
+Let agent \(i\)'s trajectory have \(R_i\) steps (transitions). If \(R_i = 0\), skip this agent.
+
+**If `enable_reward_decay=True`** (default):
+
+Compute exponential decay weights \(w_{i,s}\) for \(s \in \{0, 1, \dots, R_i-1\}\):
+\[
+w_{i,s} = \frac{\gamma^{R_i - 1 - s}}{\sum_{j=0}^{R_i-1} \gamma^{R_i - 1 - j}},
+\]
+where \(\gamma = \texttt{REWARD\_DECAY\_GAMMA}\) (0.7 by default).
+
+The normalized weight vector satisfies \(\sum_{s=0}^{R_i-1} w_{i,s} = 1\), with \(w_{i,0}\) (earliest step) receiving the most decay and \(w_{i,R_i-1}\) (latest step) receiving the least decay.
+
+Assign step rewards:
+\[
+r_{i,s} \mathrel{+}= \hat{r}_i \cdot w_{i,s}.
+\]
+
+**If `enable_reward_decay=False`** (legacy mode):
+
+Assign all accumulated reward to the final step:
+\[
+r_{i,R_i-1} \mathrel{+}= \hat{r}_i.
+\]
+
+#### Step 5: Return summary metrics
+
+The reward shaper returns:
+
+- `stepwise_comparisons_used`: \(C_\text{valid}\), the number of valid comparison events processed.
+- `missing_comparisons`: \(M\), the number of turns (after exemption period) with no valid comparisons.
+
+### Comparison attribution: "Most recent action before the comparison"
+
+Each agent \(i\) has one transition per cycle. The reward shaper attributes each comparison to the compared agents' **most recent step strictly before** the current authored turn. This is used only to validate that both agents have acted (step 1 above checks `agent_a_step_idx >= 0` and `agent_b_step_idx >= 0`); the actual reward distribution happens in step 4.
 
 Concretely, the shaper computes:
 
@@ -214,9 +315,9 @@ If an agent has not acted before \(t\), the function returns \(-1\), and the com
 
 #### Worked example (3 agents, 2 cycles)
 
-Let \(N=3\). Global turns proceed in fixed order and “cycle” means one full pass over all agents:
+Let \(N=3\). Global turns proceed in fixed order and "cycle" means one full pass over all agents:
 
-| Global turn \(t\) | Acting agent | Cycle \(c=\lfloor t/N \rfloor\) | That agent’s step index |
+| Global turn \(t\) | Acting agent | Cycle \(c=\lfloor t/N \rfloor\) | That agent's step index |
 |---:|---:|---:|---:|
 | 0 | 0 | 0 | 0 |
 | 1 | 1 | 0 | 0 |
@@ -225,49 +326,36 @@ Let \(N=3\). Global turns proceed in fixed order and “cycle” means one full 
 | 4 | 1 | 1 | 1 |
 | 5 | 2 | 1 | 1 |
 
-Now suppose at **turn \(t=4\)** (Agent 1’s response) the `<comparison>` text contains `Agent 0 > Agent 2`.
+Now suppose at **turn \(t=4\)** (Agent 1's response) the `<comparison>` text contains `Agent 0 > Agent 2`.
 
-- For Agent 0: most recent action strictly before \(t=4\) was at \(t'=3\), so credited step is \(s_0=\lfloor 3/3 \rfloor = 1\).
-- For Agent 2: most recent action strictly before \(t=4\) was at \(t'=2\), so credited step is \(s_2=\lfloor 2/3 \rfloor = 0\).
+Validation checks pass (both agents have acted), so:
+- Comparison accumulator: \(\rho_0^\text{comp} \mathrel{+}= 1\), \(\rho_2^\text{comp} \mathrel{-}= 1\).
+- \(C_\text{valid}\) increments by 1.
 
-So this single comparison updates **Agent 0 step 1** by `+1` and **Agent 2 step 0** by `-1`. This “cross-cycle” attribution happens whenever the author is early in a cycle and one compared agent has not yet taken their turn in that same cycle.
+Similarly, at **turn \(t=5\)** (Agent 2's response), if it writes `Agent 1 < Agent 0`:
+- Comparison accumulator: \(\rho_1^\text{comp} \mathrel{-}= 1\), \(\rho_0^\text{comp} \mathrel{+}= 1\).
+- \(C_\text{valid}\) increments by 1.
 
-Similarly, at **turn \(t=5\)** (Agent 2’s response), if it writes `Agent 1 < Agent 0`:
+After all turns, suppose \(C_\text{valid}=2\), \(T_\text{eligible}=4\), \(M=0\), and agent 0 has 2 steps. With `enable_reward_decay=True` and \(\gamma=0.7\):
 
-- Agent 1’s most recent action before \(t=5\) is \(t'=4\) → credited step \(s_1=\lfloor 4/3 \rfloor = 1\) (gets `-1`).
-- Agent 0’s most recent action before \(t=5\) is \(t'=3\) → credited step \(s_0=\lfloor 3/3 \rfloor = 1\) (gets `+1`).
-
-### Reward update rule
-
-For a valid comparison event \((u, t, a, \operatorname{op}, b)\) with computed step indices \(s_a, s_b \ge 0\), the shaper updates the rewards stored in the trajectories’ transitions:
-
-- If \(a > b\):
-  \[
-  r_{a,s_a} \mathrel{+}= 1,\quad r_{b,s_b} \mathrel{-}= 1.
-  \]
-- If \(a < b\):
-  \[
-  r_{a,s_a} \mathrel{-}= 1,\quad r_{b,s_b} \mathrel{+}= 1.
-  \]
-
-This is exactly `BaseMultiAgentEnvGroupBuilder._populate_stepwise_rewards(...)`.
+\[
+\hat{r}_0 = 2 \cdot (1/2) = 1.0,
+\]
+\[
+w_{0,0} = \frac{0.7^1}{0.7 + 1.0} \approx 0.412, \quad w_{0,1} = \frac{1.0}{1.7} \approx 0.588,
+\]
+\[
+r_{0,0} = 1.0 \cdot 0.412 = 0.412, \quad r_{0,1} = 1.0 \cdot 0.588 = 0.588.
+\]
 
 ### Total return per agent
 
-Because final rewards are always `0.0`, each agent’s total return for the debate is:
+Because final rewards are always `0.0`, each agent's total return for the debate is:
 \[
-R_i = \sum_{s=0}^{R-1} r_{i,s}.
+R_i = \sum_{s=0}^{R_i-1} r_{i,s}.
 \]
 
-If no valid comparisons occur, all \(r_{i,s}=0\) and all returns are 0.
-
-### Logging for reward shaping
-
-The reward shaper returns a single summary metric:
-
-- `stepwise_comparisons_used`: sum of absolute non-zero reward increments assigned across all transitions.
-
-This is computed by scanning all trajectories after mutation and summing `abs(transition.reward)` whenever a transition reward is non-zero. Note that if multiple comparisons hit the same step with opposite signs (e.g., `+1` then `-1`), they can cancel to 0 and will not contribute to this metric.
+If no valid comparisons occur and format penalties are disabled, all \(r_{i,s}=0\) and all returns are 0.
 
 ## RL Advantage Computation and Token-Level Objective (How Rewards Become Gradients)
 
@@ -307,11 +395,45 @@ The verifiable environment (`verifiable_env.py`) requires that each `<solution>`
 
 - **Training mode (`is_training=True`)**:
   - rewards: still *comparison-derived step rewards* (identical shaping rule as above),
-  - metrics: logs `train_<dataset>/format`, `train_<dataset>/correct`, and `train_<dataset>/pass@N`, computed using the latest response per agent (correctness) and the fraction of valid formatted responses across all of that agent’s turns (format).
+  - metrics: logs per-agent and multi-agent aggregation metrics:
+    - Per-agent metrics (one value per agent):
+      - `train_<dataset>/format`: fraction of agent's responses with valid format (not `[INCOMPLETE]` or `[PARSE_ERROR]`),
+      - `train_<dataset>/correct`: 1.0 if agent's latest response is correct, 0.0 otherwise.
+    - Multi-agent aggregation metrics (same value for all agents in the group):
+      - `train_<dataset>/pass@N`: 1.0 if at least one agent produced a correct answer (best-of-N),
+      - `train_<dataset>/avg@N`: mean correctness across all N agents,
+      - `train_<dataset>/cons@N`: 1.0 if more than half of the agents produced correct answers (majority vote).
 
 - **Evaluation mode (`is_training=False`)**:
-  - `eval_mode="debate"`: multi-turn debate, then compute `format`/`correct` from each agent’s latest parsed solution.
+  - `eval_mode="debate"`: multi-turn debate, then compute `format`/`correct` from each agent's latest parsed solution.
   - `eval_mode="direct"`: a separate single-turn env `DirectMathEvaluationEnv` that prompts once and grades the response text.
+
+### Multi-agent aggregation metrics (training only)
+
+For a debate group with \(N\) agents, let \(y_i \in \{0,1\}\) denote whether agent \(i\)'s latest response is correct. Define:
+
+- **pass@N** (optimistic best-of-N):
+  \[
+  \text{pass@N} = \begin{cases}
+  1 & \text{if } \exists i: y_i = 1, \\
+  0 & \text{otherwise}.
+  \end{cases}
+  \]
+
+- **avg@N** (mean accuracy):
+  \[
+  \text{avg@N} = \frac{1}{N} \sum_{i=0}^{N-1} y_i.
+  \]
+
+- **cons@N** (majority consensus):
+  \[
+  \text{cons@N} = \begin{cases}
+  1 & \text{if } \sum_{i=0}^{N-1} y_i > N/2, \\
+  0 & \text{otherwise}.
+  \end{cases}
+  \]
+
+These metrics are computed in `VerifiableMultiAgentEnvGroupBuilder._compute_training_rewards` (`verifiable_env.py:375-397`) and logged for every agent in the group (each agent receives the same aggregation metric values).
 
 Correctness grading uses `tinker_cookbook/recipes/math_rl/math_grading.py` via `safe_grade(...)`, with a configurable `grader` (`"sympy"` or `"math_verify"`) and `grade_timeout`.
 
@@ -326,8 +448,11 @@ These are enabled via `log_full_transcript` and logtree’s outer logging contex
 
 ## Notable Edge Cases / Non-Obvious Behaviors
 
-- **Non-verifiable `history_turns=0` means “no history”.** The prompt includes only the question and the per-turn instruction.
-- **Reward is attributed to the most recent step before a comparison, not the final answer.** A ranking made late in the debate credits (or debits) whatever the compared agent last said before that ranking.
+- **Non-verifiable `history_turns=0` means "no history".** The prompt includes only the question and the per-turn instruction.
+- **Reward accumulation and distribution are decoupled (since reward decay was introduced).** Comparisons accumulate into per-agent totals, which are then normalized and distributed across all agent steps with exponential decay weights. This differs from the legacy behavior (pre-decay) where each comparison directly updated a single step.
+- **Reward normalization scales by episode size.** The comparison normalization factor \(\alpha_\text{comp} = 1/C_\text{valid}\) means that an episode with 10 comparisons contributes the same total magnitude of learning signal as an episode with 2 comparisons (all else equal). Similarly, format penalties scale by the number of eligible turns.
+- **Format penalties apply only after turn 1 (0-indexed).** Turns 0 and 1 are exempt from format checking (`FORMAT_EXEMPT_TURNS=2`), allowing agents to warm up before penalties are applied.
 - **Comparisons are substring-matched.** Only patterns of the form `Agent <int> > Agent <int>` (or `<`) are recognized; ties are not represented.
 - **Self-comparisons are filtered at parse time.** They do not appear in `ParsedResponse.comparisons`, and the count is tracked in `ParsedResponse.self_comparisons_dropped`.
 - **Summarization changes observation prefix structure.** When history is summarized, later observations may no longer be a prefix-extension of earlier observation+action sequences, causing `trajectory_to_data` to split into multiple data items.
+- **Multi-agent aggregation metrics (pass@N, avg@N, cons@N) are logged identically for all agents in a group.** These are group-level metrics, not per-agent metrics. Each agent in the group receives the same value for these metrics in their logged output.
