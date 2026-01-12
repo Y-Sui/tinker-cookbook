@@ -196,6 +196,7 @@ def build_config(cli_config: CLIConfig) -> train.Config:
         num_groups_to_log=cli_config.num_groups_to_log,
         wandb_project=wandb_project,
         wandb_name=wandb_name,
+        use_stepwise_advantages=True,
     )
 
 

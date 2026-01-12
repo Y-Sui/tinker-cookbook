@@ -23,7 +23,9 @@ from tinker_cookbook.display import colorize_example
 from tinker_cookbook.eval.evaluators import SamplingClientEvaluator, SamplingClientEvaluatorBuilder
 from tinker_cookbook.rl.data_processing import (
     assemble_training_data,
+    assemble_training_data_stepwise,
     compute_advantages,
+    compute_stepwise_advantages,
     remove_constant_reward_groups,
 )
 from tinker_cookbook.rl.metric_util import RLTestSetEvaluator, compute_trajectory_metrics
@@ -110,9 +112,14 @@ def _select_representative_inds(scores: list[float], num_inds: int) -> list[int]
 
 
 @scope
-def print_group(traj_group: TrajectoryGroup, tokenizer: Tokenizer):
+def print_group(
+    traj_group: TrajectoryGroup, tokenizer: Tokenizer, use_stepwise_advantages: bool = False
+):
     """
     Print a subset of the trajectory group to the console.
+
+    Args:
+        use_stepwise_advantages: If True, use per-step advantages for display.
     """
     # Cut down the number of trajectories to print
     max_trajs_to_print = 4
@@ -125,8 +132,12 @@ def print_group(traj_group: TrajectoryGroup, tokenizer: Tokenizer):
         )
 
     rewards = traj_group.get_total_rewards()
-    advantages_G = compute_advantages([traj_group])
-    data_D, metadata_D = assemble_training_data([traj_group], advantages_G)
+    if use_stepwise_advantages:
+        advantages_P_G_S = compute_stepwise_advantages([traj_group])
+        data_D, metadata_D = assemble_training_data_stepwise([traj_group], advantages_P_G_S)
+    else:
+        advantages_G = compute_advantages([traj_group])
+        data_D, metadata_D = assemble_training_data([traj_group], advantages_G)
 
     buf = io.StringIO()
 
@@ -317,6 +328,11 @@ class Config:
 
     # Logtree configuration
     num_groups_to_log: int = 4  # Number of groups to log per iteration (0 = disable logging)
+
+    # Per-step advantage computation (for multi-step environments like multi-agent debate)
+    # When True, computes per-step advantages instead of collapsing to trajectory-level.
+    # This enables proper credit assignment where different steps have different rewards.
+    use_stepwise_advantages: bool = False
 
 
 @scope
@@ -790,8 +806,15 @@ async def prepare_minibatch(
     model_name: str,
     kl_penalty_coef: float,
     kl_discount_factor: float,
+    use_stepwise_advantages: bool = False,
 ) -> tuple[list[tinker.Datum], dict[str, Any]]:
-    """Converts the trajectories into a minibatch, and provides metrics about the minibatch"""
+    """Converts the trajectories into a minibatch, and provides metrics about the minibatch.
+
+    Args:
+        use_stepwise_advantages: If True, compute per-step advantages instead of
+            trajectory-level advantages. This enables proper credit assignment in
+            multi-step environments where different steps have different rewards.
+    """
 
     # Compute trajectory metrics
     metrics = {}
@@ -800,12 +823,20 @@ async def prepare_minibatch(
 
     # Print up to two trajectory groups
     for traj_group in trajectory_groups_P[:2]:
-        print_group(traj_group, tokenizer)
+        print_group(traj_group, tokenizer, use_stepwise_advantages=use_stepwise_advantages)
 
     # Assemble training data
     with timed("assemble_training_data", metrics):
-        advantages_P = compute_advantages(trajectory_groups_P)
-        data_D, _metadata_D = assemble_training_data(trajectory_groups_P, advantages_P)
+        if use_stepwise_advantages:
+            # Per-step advantages for multi-step environments (e.g., multi-agent debate)
+            advantages_P_G_S = compute_stepwise_advantages(trajectory_groups_P)
+            data_D, _metadata_D = assemble_training_data_stepwise(
+                trajectory_groups_P, advantages_P_G_S
+            )
+        else:
+            # Original trajectory-level advantages
+            advantages_P = compute_advantages(trajectory_groups_P)
+            data_D, _metadata_D = assemble_training_data(trajectory_groups_P, advantages_P)
 
     # Incorporate KL penalty if configured
     if kl_penalty_coef > 0:
@@ -930,6 +961,7 @@ async def do_train_step_streaming_and_get_sampling_client(
                 model_name=cfg.model_name,
                 kl_penalty_coef=cfg.kl_penalty_coef,
                 kl_discount_factor=cfg.kl_discount_factor,
+                use_stepwise_advantages=cfg.use_stepwise_advantages,
             )
             metrics.update(prepare_minibatch_metrics)
 
@@ -1008,6 +1040,7 @@ async def do_train_step_and_get_sampling_client(
         model_name=cfg.model_name,
         kl_penalty_coef=cfg.kl_penalty_coef,
         kl_discount_factor=cfg.kl_discount_factor,
+        use_stepwise_advantages=cfg.use_stepwise_advantages,
     )
     metrics.update(prepare_minibatch_metrics)
 

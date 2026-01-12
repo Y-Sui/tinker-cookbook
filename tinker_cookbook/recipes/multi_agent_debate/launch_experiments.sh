@@ -1,6 +1,6 @@
 #!/bin/bash
 
-SESSION="debate-training-01-12"
+SESSION="debate-training-01-12-updated"
 
 # Check if session already exists (check before set -e to avoid early exit)
 if tmux has-session -t $SESSION 2>/dev/null; then
@@ -14,7 +14,7 @@ echo "Creating new tmux session: $SESSION"
 set -e  # Enable exit on error after the session check
 
 # Create new session with first window (Experiment 1)
-tmux new-session -d -s $SESSION -n "exp1-nodebug-both"
+tmux new-session -d -s $SESSION -n "exp1-nodebug-both-updated"
 tmux send-keys -t $SESSION:0 'conda activate tinker' C-m
 tmux send-keys -t $SESSION:0 'python -m tinker_cookbook.recipes.multi_agent_debate.train \
     model_name="Qwen/Qwen3-8B" \
@@ -26,7 +26,7 @@ tmux send-keys -t $SESSION:0 'python -m tinker_cookbook.recipes.multi_agent_deba
     history_rounds=2 \
     batch_size=16 \
     num_train_datapoints=-1 \
-    epoch=3 \
+    epoch=6 \
     learning_rate=3e-5 \
     eval_every=2 \
     save_every=10 \
@@ -40,7 +40,7 @@ tmux send-keys -t $SESSION:0 'python -m tinker_cookbook.recipes.multi_agent_deba
     verifiable_answer_field="answer" \
     verifiable_grader="sympy" \
     wandb_project="CANT-01-12" \
-    wandb_name="Qwen3-8B-decay-format-penalty-disable-thinking-0112" \
+    wandb_name="Updated-Qwen3-8B-decay-format-penalty-disable-thinking-0112" \
     enable_format_penalty=True' C-m
 
 # # Window 2: Experiment 2 - with thinking, 8096 tokens, both features
@@ -74,7 +74,7 @@ tmux send-keys -t $SESSION:0 'python -m tinker_cookbook.recipes.multi_agent_deba
 # #     enable_format_penalty=True' C-m
 
 # Window 3: Experiment 3 - with thinking, 16392 tokens, both features
-tmux new-window -t $SESSION:2 -n "exp3-think-16k-both"
+tmux new-window -t $SESSION:2 -n "exp3-think-16k-both-updated"
 tmux send-keys -t $SESSION:2 'conda activate tinker' C-m
 tmux send-keys -t $SESSION:2 'python -m tinker_cookbook.recipes.multi_agent_debate.train \
     model_name="Qwen/Qwen3-8B" \
@@ -86,7 +86,7 @@ tmux send-keys -t $SESSION:2 'python -m tinker_cookbook.recipes.multi_agent_deba
     history_rounds=2 \
     batch_size=16 \
     num_train_datapoints=-1 \
-    epoch=3 \
+    epoch=6 \
     learning_rate=3e-5 \
     eval_every=2 \
     save_every=10 \
@@ -100,7 +100,7 @@ tmux send-keys -t $SESSION:2 'python -m tinker_cookbook.recipes.multi_agent_deba
     verifiable_answer_field="answer" \
     verifiable_grader="sympy" \
     wandb_project="CANT-01-12" \
-    wandb_name="Qwen3-8B-decay-format-penalty-thinking-16392-0112" \
+    wandb_name="Update-Qwen3-8B-decay-format-penalty-thinking-16392-0112" \
     enable_format_penalty=True' C-m
 
 # # Window 4: Experiment 4 - no thinking, only decay enabled
