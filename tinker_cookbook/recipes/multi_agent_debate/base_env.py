@@ -302,10 +302,11 @@ class BaseMultiAgentEnvGroupBuilder(EnvGroupBuilder, ABC):
         """
         Modify trajectories in-place to assign step-wise rewards based on comparisons.
 
-        Enhanced with:
-        - Reward normalization by total valid comparisons
-        - Exponential decay distribution across all agent steps (if enable_reward_decay=True)
-        - Format penalties for missing comparisons (if enable_format_penalty=True)
+        Reward computation:
+        - Each comparison provides ±1.0 reward (no normalization for stronger RL signals)
+        - Format penalties: -0.5 per missing comparison (if enable_format_penalty=True)
+        - Advantage normalization: center rewards by subtracting mean across agents
+        - Exponential decay: distribute rewards across steps (if enable_reward_decay=True)
 
         Returns summary metrics.
         """
@@ -362,18 +363,39 @@ class BaseMultiAgentEnvGroupBuilder(EnvGroupBuilder, ABC):
 
                 author_id = response.author_id
 
+                # If there are fewer than two *other* agents who have acted at least once
+                # before this turn, comparisons are not meaningful and the prompts allow "N/A".
+                # In particular, for num_agents <= 2 this prevents penalizing every turn.
+                num_other_agents_who_have_acted = 0
+                for other_agent_id in range(self.num_agents):
+                    if other_agent_id == author_id:
+                        continue
+                    if get_step_idx_before_turn(other_agent_id, turn_idx, self.num_agents) >= 0:
+                        num_other_agents_who_have_acted += 1
+                if num_other_agents_who_have_acted < 2:
+                    continue
+
                 # Check if this response has valid comparisons
                 if len(response.comparisons) == 0:
                     agent_format_rewards[author_id] += FORMAT_PENALTY
                     missing_comparisons += 1
 
-        # Step 3: Compute normalization factors
-        total_eligible_turns = max(0, len(coordinator.state.agent_responses) - FORMAT_EXEMPT_TURNS)
+        # Step 3: Compute total reward for each agent (before centering)
+        # Use raw comparison rewards (±1.0 per comparison) for stronger RL signals
+        total_rewards = []
+        for agent_id in range(self.num_agents):
+            comparison_reward = agent_comparison_rewards[agent_id]
+            format_reward = agent_format_rewards[agent_id]
+            total_reward = comparison_reward + format_reward
+            total_rewards.append(total_reward)
 
-        comparison_norm = 1.0 / total_valid_comparisons if total_valid_comparisons > 0 else 1.0
-        format_norm = 1.0 / total_eligible_turns if total_eligible_turns > 0 else 1.0
+        # Step 4: Apply advantage normalization (center rewards by subtracting mean)
+        # This ensures above-average agents get positive rewards, below-average get negative,
+        # and maintains zero-sum property for multi-agent competition
+        mean_reward = sum(total_rewards) / len(total_rewards) if total_rewards else 0.0
+        centered_rewards = [reward - mean_reward for reward in total_rewards]
 
-        # Step 4: Normalize and distribute rewards to trajectory steps
+        # Step 5: Distribute centered rewards to trajectory steps
         for agent_id in range(self.num_agents):
             trajectory = trajectory_group[agent_id]
             num_steps = len(trajectory.transitions)
@@ -381,22 +403,22 @@ class BaseMultiAgentEnvGroupBuilder(EnvGroupBuilder, ABC):
             if num_steps == 0:
                 continue  # No steps to assign rewards to
 
-            # Compute total normalized reward for this agent
-            normalized_comparison_reward = agent_comparison_rewards[agent_id] * comparison_norm
-            normalized_format_reward = agent_format_rewards[agent_id] * format_norm
-            total_reward = normalized_comparison_reward + normalized_format_reward
+            centered_reward = centered_rewards[agent_id]
 
             if self.enable_reward_decay:
                 # Distribute reward across all steps with exponential decay
                 decay_weights = _compute_decay_weights(num_steps, REWARD_DECAY_GAMMA)
                 for step_idx, weight in enumerate(decay_weights):
-                    trajectory.transitions[step_idx].reward += total_reward * weight
+                    trajectory.transitions[step_idx].reward += centered_reward * weight
             else:
                 # Legacy behavior: assign all reward to most recent step
-                trajectory.transitions[-1].reward += total_reward
+                trajectory.transitions[-1].reward += centered_reward
 
-        # Step 5: Return summary metrics
+        # Step 6: Return summary metrics
         return {
             "stepwise_comparisons_used": total_valid_comparisons,
             "missing_comparisons": missing_comparisons,
+            "mean_reward_before_centering": mean_reward,
+            "max_reward_after_centering": max(centered_rewards) if centered_rewards else 0.0,
+            "min_reward_after_centering": min(centered_rewards) if centered_rewards else 0.0,
         }

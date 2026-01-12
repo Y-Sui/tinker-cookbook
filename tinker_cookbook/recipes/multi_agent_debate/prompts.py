@@ -463,7 +463,15 @@ def parse_agent_response(
     comparisons: list[tuple[int, str, int]] = []
     self_comparisons_dropped = 0
     if comparison_text:
-        pairs = re.findall(r"Agent\s+(\d+)\s*([><])\s*Agent\s+(\d+)", comparison_text)
+        # Accept both:
+        # - "Agent 1 > Agent 2"
+        # - "Agent 1 (R1) > Agent 2 (R2)"
+        # (The system prompts often encourage including round annotations.)
+        pair_pattern = re.compile(
+            r"Agent\s+(\d+)(?:\s*\(R\d+\))?\s*([><])\s*Agent\s+(\d+)(?:\s*\(R\d+\))?",
+            flags=re.IGNORECASE,
+        )
+        pairs = pair_pattern.findall(comparison_text)
         for agent_a, op, agent_b in pairs:
             a_id = int(agent_a)
             b_id = int(agent_b)
