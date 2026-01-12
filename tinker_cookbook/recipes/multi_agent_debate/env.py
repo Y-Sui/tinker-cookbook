@@ -215,7 +215,6 @@ class MultiAgentDebateDataset(RLDataset):
         max_rounds: int,
         num_datapoints: int,
         model_name: str,
-        enable_reward_decay: bool = True,
         enable_format_penalty: bool = True,
     ):
         self.batch_size = batch_size
@@ -230,7 +229,6 @@ class MultiAgentDebateDataset(RLDataset):
         self.max_rounds = max_rounds
         self.num_datapoints = num_datapoints
         self.model_name = model_name
-        self.enable_reward_decay = enable_reward_decay
         self.enable_format_penalty = enable_format_penalty
 
     def get_batch(self, index: int) -> Sequence[EnvGroupBuilder]:
@@ -251,7 +249,6 @@ class MultiAgentDebateDataset(RLDataset):
                 log_full_transcript=self.log_full_transcript,
                 max_rounds=self.max_rounds,
                 model_name=self.model_name,
-                enable_reward_decay=self.enable_reward_decay,
                 enable_format_penalty=self.enable_format_penalty,
             )
             for question_index in range(batch_start, batch_end)
@@ -281,7 +278,6 @@ class MultiAgentDebateDatasetBuilder(RLDatasetBuilder):
     dataset_path: str = "tinker_cookbook/example_data/nonverifiable_queries.jsonl"
     problem_field: str = "query"
     max_questions: int = -1  # No limit by default
-    enable_reward_decay: bool = True
     enable_format_penalty: bool = True
 
     def load_questions(self) -> list[str]:
@@ -318,7 +314,6 @@ class MultiAgentDebateDatasetBuilder(RLDatasetBuilder):
             max_rounds=self.max_rounds,
             num_datapoints=total_train_datapoints,
             model_name=self.model_name,
-            enable_reward_decay=self.enable_reward_decay,
             enable_format_penalty=self.enable_format_penalty,
         )
 

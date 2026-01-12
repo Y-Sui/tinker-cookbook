@@ -508,7 +508,6 @@ class VerifiableMathDebateDataset(RLDataset):
         grade_timeout: float = 1.0,
         eval_mode: Literal["direct", "debate", "both"] = "debate",
         is_training: bool = True,
-        enable_reward_decay: bool = True,
         enable_format_penalty: bool = True,
     ):
         self.batch_size = batch_size
@@ -527,7 +526,6 @@ class VerifiableMathDebateDataset(RLDataset):
         self.grade_timeout = grade_timeout
         self.eval_mode = eval_mode
         self.is_training = is_training
-        self.enable_reward_decay = enable_reward_decay
         self.enable_format_penalty = enable_format_penalty
 
     def get_batch(self, index: int) -> Sequence[EnvGroupBuilder]:
@@ -551,7 +549,6 @@ class VerifiableMathDebateDataset(RLDataset):
                 grade_timeout=self.grade_timeout,
                 eval_mode=self.eval_mode,
                 is_training=self.is_training,
-                enable_reward_decay=self.enable_reward_decay,
                 enable_format_penalty=self.enable_format_penalty,
             )
             for problem_index in range(batch_start, batch_end)
@@ -580,7 +577,6 @@ class VerifiableMathDebateDatasetBuilder(RLDatasetBuilder):
     max_questions: int = -1  # No limit by default
     grader: Literal["sympy", "math_verify"] = "sympy"
     grade_timeout: float = 2.0  # Increased timeout for safety
-    enable_reward_decay: bool = True
     enable_format_penalty: bool = True
 
     async def __call__(
@@ -625,7 +621,6 @@ class VerifiableMathDebateDatasetBuilder(RLDatasetBuilder):
             grade_timeout=self.grade_timeout,
             eval_mode="debate",  # Training always uses debate mode
             is_training=True,  # Training dataset computes step-wise rewards
-            enable_reward_decay=self.enable_reward_decay,
             enable_format_penalty=self.enable_format_penalty,
         )
 
