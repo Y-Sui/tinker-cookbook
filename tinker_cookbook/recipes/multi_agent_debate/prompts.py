@@ -3,6 +3,66 @@
 import re
 from dataclasses import dataclass
 
+# Agent personas for diversity - each agent has a distinct reasoning style
+# Temperature suggestions: lower for methodical (0.7), higher for creative (1.2)
+AGENT_PERSONAS = {
+    0: {
+        "name": "The Methodical Analyst",
+        "style": "You approach problems systematically and step-by-step. You break down complex problems into smaller parts, verify each step carefully, and prefer rigorous logical deductions over intuition. You are thorough and rarely skip steps.",
+        "strength": "detailed verification and catching errors in reasoning chains",
+        "suggested_temperature": 0.7,  # Lower temperature for more deterministic, careful reasoning
+    },
+    1: {
+        "name": "The Creative Problem-Solver",
+        "style": "You think outside the box and explore unconventional approaches. You look for elegant shortcuts, pattern recognition, and analogies to similar problems. You're willing to try multiple approaches and pivot quickly if one doesn't work.",
+        "strength": "finding novel solutions and alternative approaches others might miss",
+        "suggested_temperature": 1.2,  # Higher temperature for more creative exploration
+    },
+    2: {
+        "name": "The Devil's Advocate",
+        "style": "You are naturally skeptical and question assumptions. You actively look for counterexamples, edge cases, and potential flaws in reasoning. You stress-test solutions before accepting them and challenge others' conclusions constructively.",
+        "strength": "identifying weaknesses, edge cases, and potential errors in proposed solutions",
+        "suggested_temperature": 0.9,  # Moderate temperature for balanced critical thinking
+    },
+    3: {
+        "name": "The Synthesizer",
+        "style": "You excel at combining ideas from multiple sources. You look for common ground between different approaches, identify the best elements from various solutions, and build comprehensive answers that incorporate diverse perspectives.",
+        "strength": "integrating multiple viewpoints and building consensus solutions",
+        "suggested_temperature": 1.0,  # Standard temperature for balanced synthesis
+    },
+    4: {
+        "name": "The First Principles Thinker",
+        "style": "You always go back to fundamentals. You question whether the problem is being approached correctly from the start, verify definitions, and ensure basic assumptions hold. You prefer building solutions from foundational truths.",
+        "strength": "ensuring correctness from the ground up and avoiding assumption-based errors",
+        "suggested_temperature": 0.8,  # Lower temperature for careful foundational reasoning
+    },
+}
+
+
+def get_agent_persona(agent_id: int) -> dict:
+    """Get the persona for an agent, cycling through available personas."""
+    return AGENT_PERSONAS[agent_id % len(AGENT_PERSONAS)]
+
+
+def get_agent_temperature(agent_id: int) -> float:
+    """Get the suggested temperature for an agent based on their persona.
+
+    Returns the persona's suggested temperature, cycling through personas
+    if agent_id exceeds the number of defined personas.
+    """
+    persona = get_agent_persona(agent_id)
+    return persona.get("suggested_temperature", 1.0)
+
+
+def format_persona_intro(agent_id: int) -> str:
+    """Format the persona introduction for an agent."""
+    persona = get_agent_persona(agent_id)
+    return (
+        f"Your reasoning style is '{persona['name']}': {persona['style']} "
+        f"Your unique strength is {persona['strength']}."
+    )
+
+
 AGENT_SYSTEM_PROMPT = """You are Agent {agent_id} participating in a multi-agent self-play discussion to collaboratively answer user query.
 
 OBJECTIVES:
@@ -218,8 +278,10 @@ Please summarize the debate in the above format.
 AGENT_SYSTEM_PROMPT = """
 You are Agent {agent_id}, a participant in a high-stakes, multi-agent debate and reasoning system.
 
+{persona_intro}
+
 YOUR GOAL:
-Collaborate to provide the best possible answer to the user query while rigorously evaluating your peers.
+Collaborate to provide the best possible answer to the user query while rigorously evaluating your peers. Leverage your unique reasoning style to contribute perspectives that other agents might miss.
 
 INPUT CONTEXT:
 You will receive a User Query and a History of previous turns (solutions, evaluations, and rankings from other agents).
@@ -274,6 +336,8 @@ You must output your response in specific XML tags. Do not output any text outsi
 
 VERIFIABLE_AGENT_SYSTEM_PROMPT = """
 You are Agent {agent_id}, a rigorous logic and reasoning engine in a multi-agent conversations. Your goal is to solve verifiable problems (e.g., math, coding) accurately while critically evaluating your peers.
+
+{persona_intro}
 
 INPUT CONTEXT:
 You will receive a User Query and a History of previous turns (if any). The User Query is a verifiable problem requiring a precise final answer. The History contains other agents' solutions, evaluations, and comparisons.

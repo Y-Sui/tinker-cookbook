@@ -42,7 +42,7 @@ from tinker_cookbook.tokenizer_utils import get_tokenizer
 from .base_env import BaseMultiAgentDebateEnv, BaseMultiAgentEnvGroupBuilder
 from .coordinator import MultiAgentCoordinator
 from .loaders import load_math_problems_from_jsonl
-from .prompts import VERIFIABLE_AGENT_SYSTEM_PROMPT, ParsedResponse
+from .prompts import VERIFIABLE_AGENT_SYSTEM_PROMPT, ParsedResponse, format_persona_intro
 from .utils import (
     STOP_CONDITION,
     get_debate_stop_condition,
@@ -124,7 +124,11 @@ class VerifiableMultiAgentDebateEnv(BaseMultiAgentDebateEnv):
         return get_debate_stop_condition(self.renderer)
 
     def get_system_prompt(self) -> str:
-        return VERIFIABLE_AGENT_SYSTEM_PROMPT.format(agent_id=self.agent_id)
+        persona_intro = format_persona_intro(self.agent_id)
+        return VERIFIABLE_AGENT_SYSTEM_PROMPT.format(
+            agent_id=self.agent_id,
+            persona_intro=persona_intro,
+        )
 
     def _format_turns(self, turns: list[ParsedResponse], start_offset: int = 0) -> str:
         if not turns:

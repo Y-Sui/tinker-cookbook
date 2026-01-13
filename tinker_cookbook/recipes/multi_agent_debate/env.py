@@ -20,7 +20,7 @@ from tinker_cookbook.tokenizer_utils import get_tokenizer
 from .base_env import BaseMultiAgentDebateEnv, BaseMultiAgentEnvGroupBuilder
 from .coordinator import MultiAgentCoordinator
 from .loaders import load_questions_from_jsonl
-from .prompts import AGENT_SYSTEM_PROMPT, ParsedResponse
+from .prompts import AGENT_SYSTEM_PROMPT, ParsedResponse, format_persona_intro
 from .utils import get_debate_stop_condition, log_debate_transcript
 
 
@@ -34,7 +34,11 @@ class MultiAgentDebateEnv(BaseMultiAgentDebateEnv):
 
     def get_system_prompt(self) -> str:
         """Get the system prompt for this agent."""
-        return AGENT_SYSTEM_PROMPT.format(agent_id=self.agent_id)
+        persona_intro = format_persona_intro(self.agent_id)
+        return AGENT_SYSTEM_PROMPT.format(
+            agent_id=self.agent_id,
+            persona_intro=persona_intro,
+        )
 
     def _format_turns(self, turns: list[ParsedResponse], num_turns: int) -> str:
         if not turns or num_turns == 0:

@@ -57,7 +57,8 @@ class CLIConfig:
     epoch: int = 1  # Number of times to cycle through the dataset
     learning_rate: float = 3e-5
     use_cosine_lr_schedule: bool = False  # Use cosine LR decay (base_lr → 0)
-    eval_every: int = 50  # Evaluate every N batches (larger for TTL)
+    disable_eval: bool = False  # Disable evaluation during training entirely
+    eval_every: int = 50  # Evaluate every N batches (ignored if disable_eval=True)
     save_every: int = 100  # Save checkpoint every N batches
     max_parallel_evals: int = 64  # Max concurrent evaluations (0=unlimited)
 
@@ -184,6 +185,9 @@ def build_config(cli_config: CLIConfig) -> train.Config:
     else:
         raise ValueError(f"Invalid env: {cli_config.env}. Must be 'verifiable' or 'non-verifiable'")
 
+    # If disable_eval is True, set eval_every to 0 to skip all evaluations
+    eval_every = 0 if cli_config.disable_eval else cli_config.eval_every
+
     return train.Config(
         model_name=model_name,
         log_path=log_path,
@@ -191,7 +195,7 @@ def build_config(cli_config: CLIConfig) -> train.Config:
         learning_rate=cli_config.learning_rate,
         use_cosine_lr_schedule=cli_config.use_cosine_lr_schedule,
         max_tokens=cli_config.max_tokens,
-        eval_every=cli_config.eval_every,
+        eval_every=eval_every,
         save_every=cli_config.save_every,
         num_groups_to_log=cli_config.num_groups_to_log,
         wandb_project=wandb_project,
@@ -239,7 +243,8 @@ async def main_async():
     config = build_config(cli_config)
 
     # For verifiable env, add custom dual-mode evaluator for online TTL
-    if cli_config.env == "verifiable":
+    # Skip if evaluation is disabled
+    if cli_config.env == "verifiable" and not cli_config.disable_eval:
         train_dataset, _ = await config.dataset_builder()
         evaluator = _create_verifiable_evaluator(cli_config, train_dataset)
         config = chz.replace(config, evaluator_builders=[lambda: evaluator])
