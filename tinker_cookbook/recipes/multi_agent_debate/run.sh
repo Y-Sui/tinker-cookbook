@@ -482,7 +482,7 @@ python -m tinker_cookbook.recipes.multi_agent_debate.train \
 # 01-07
 python -m tinker_cookbook.recipes.multi_agent_debate.train \
     model_name=Qwen/Qwen3-8B \
-    renderer_name=qwen3 \
+    renderer_name=qwen3_disable_thinking \
     max_tokens=8096 \
     env=verifiable \
     num_agents=3 \
@@ -504,6 +504,61 @@ python -m tinker_cookbook.recipes.multi_agent_debate.train \
     verifiable_answer_field=answer \
     verifiable_grader=sympy \
     wandb_project=CANT-01-05 \
-    wandb_name=Qwen3-8B-decay-format-penalty-thinking-8096-01-11 \
-    enable_reward_decay=True \
+    wandb_name=Updated-Qwen3-8B-decay-format-penalty-thinking-8096-01-13-aime25-b \
+    enable_format_penalty=True \
+    disable_eval=True
+
+python -m tinker_cookbook.recipes.multi_agent_debate.train \
+    model_name="Qwen/Qwen3-8B" \
+    renderer_name="qwen3_disable_thinking" \
+    max_tokens=8096 \
+    env="verifiable" \
+    num_agents=3 \
+    max_rounds=3 \
+    history_rounds=2 \
+    batch_size=16 \
+    num_train_datapoints=-1 \
+    epoch=6 \
+    learning_rate=3e-5 \
+    eval_every=2 \
+    save_every=10 \
+    max_parallel_evals=64 \
+    summarize_history=False \
+    summarize_model="Qwen/Qwen3-4B-Instruct-2507" \
+    num_groups_to_log=1 \
+    log_full_transcript=True \
+    verifiable_dataset_path=tinker_cookbook/data/aime2024_sample.jsonl \
+    verifiable_problem_field="query" \
+    verifiable_answer_field="answer" \
+    verifiable_grader="sympy" \
+    wandb_project="CANT-01-12" \
+    wandb_name="Updated-Qwen3-8B-decay-format-penalty-disable-thinking-0112-aime24" \
+    enable_format_penalty=True
+
+
+python -m tinker_cookbook.recipes.multi_agent_debate.train \
+    model_name="Qwen/Qwen3-8B" \
+    renderer_name="qwen3_disable_thinking" \
+    max_tokens=8096 \
+    env="verifiable" \
+    num_agents=3 \
+    max_rounds=3 \
+    history_rounds=2 \
+    batch_size=16 \
+    num_train_datapoints=-1 \
+    epoch=6 \
+    learning_rate=3e-5 \
+    eval_every=2 \
+    save_every=10 \
+    max_parallel_evals=64 \
+    summarize_history=False \
+    summarize_model="Qwen/Qwen3-4B-Instruct-2507" \
+    num_groups_to_log=1 \
+    log_full_transcript=True \
+    verifiable_dataset_path=tinker_cookbook/data/math500_sample.jsonl \
+    verifiable_problem_field="query" \
+    verifiable_answer_field="answer" \
+    verifiable_grader="sympy" \
+    wandb_project="CANT-01-12" \
+    wandb_name="Updated-Qwen3-8B-decay-format-penalty-disable-thinking-0112-math500" \
     enable_format_penalty=True

@@ -276,77 +276,57 @@ Please summarize the debate in the above format.
 """
 
 AGENT_SYSTEM_PROMPT = """
-You are Agent {agent_id}, a participant in a high-stakes, multi-agent debate and reasoning system.
+You are Agent {agent_id}, a participant in a multi-agent debate and reasoning system.
 
 {persona_intro}
 
 YOUR GOAL:
-Collaborate to provide the best possible answer to the user query while rigorously evaluating your peers. Leverage your unique reasoning style to contribute perspectives that other agents might miss.
+Collaborate to provide the best possible answer to the user query while evaluating your peers.
 
 INPUT CONTEXT:
 You will receive a User Query and a History of previous turns (solutions, evaluations, and rankings from other agents).
-
-IMPORTANT - UNDERSTANDING AGENT REFERENCES:
-- Agent IDs repeat each round. "Agent X (R1)" and "Agent X (R2)" are DIFFERENT agents from different rounds.
-- When you see "Agent {agent_id}" in the history with a different round number, that is NOT you - it's a different agent.
-- Agents do NOT self-evaluate by design. If an agent didn't evaluate themselves, that is CORRECT behavior, not a flaw.
-- Only evaluate agents whose contributions appear in your visible history.
 
 INSTRUCTIONS:
 
 1. **Construct Your Solution**:
    - Think deeply about the user query.
    - Formulate a comprehensive, nuanced, and accurate answer.
-   - Do not reference other agents in your solution; focus only on the user.
+   - Do not reference other agents in your solution; focus only on the query.
 
-2. **Evaluate Peers (Meta-Review)**:
+2. **Evaluate Peers**:
    - Review the "History" provided.
-   - For EACH other agent in the visible history, analyze:
-     - **Solution Accuracy**: Is their answer correct? Did they miss edge cases?
-     - **Critique Quality**: (If they provided evaluations) Were their critiques of others fair and substantial, or generic?
-     - **Ranking Logic**: Did their rankings make sense based on their critiques?
+   - For EACH other agent, analyze their solution accuracy and reasoning quality.
 
 3. **Rank Peers (Pairwise Comparison)**:
-   - Compare the *overall quality* (Solution + Insight) of every pair of other agents visible in history.
-   - You MUST exclude yourself (Agent {agent_id}) from these rankings.
-   - Use strict logic: If Agent A is better than B, and B is better than C, ensure consistency.
+   - Compare the overall quality of every pair of other agents visible in history.
+   - Exclude yourself (Agent {agent_id}) from these rankings.
 
 OUTPUT FORMAT:
-You must output your response in specific XML tags. Do not output any text outside these tags.
+Output your response in these XML tags:
 
 <solution>
-[Your direct, high-quality answer to the user query.]
+[Your answer to the user query.]
 </solution>
 
 <evaluation>
 [If no other agents have spoken, write "N/A".]
-[Otherwise, for every other agent in the visible history (e.g., Agent 1 (R1), Agent 2 (R1)...):]
-- **Agent [ID] (R[round]) Solution Critique**: [Specific strengths and weaknesses]
-- **Agent [ID] (R[round]) Evaluation Critique**: [Did they evaluate others fairly?]
+[Otherwise, for each other agent: brief critique of their solution.]
 </evaluation>
 
 <comparison>
-[If fewer than 2 other agents exist in visible history, write "N/A".]
-[Compare ALL unordered pairs of other agents. One comparison per line.]
-[Format: Agent X (RN) > Agent Y (RM) OR Agent X (RN) < Agent Y (RM)]
-[Use only > or < operators (you must choose which agent is better).]
-[Do not include Agent {agent_id} in these comparisons.]
+[If fewer than 2 other agents, write "N/A".]
+[Compare pairs of other agents. One per line. Format: Agent X > Agent Y]
+[Use only > or < (you must choose which is better). Do not include Agent {agent_id}.]
 </comparison>
 """
 
 VERIFIABLE_AGENT_SYSTEM_PROMPT = """
-You are Agent {agent_id}, a rigorous logic and reasoning engine in a multi-agent conversations. Your goal is to solve verifiable problems (e.g., math, coding) accurately while critically evaluating your peers.
+You are Agent {agent_id}, a math problem solver in a multi-agent discussion.
 
 {persona_intro}
 
 INPUT CONTEXT:
 You will receive a User Query and a History of previous turns (if any). The User Query is a verifiable problem requiring a precise final answer. The History contains other agents' solutions, evaluations, and comparisons.
-
-IMPORTANT - UNDERSTANDING AGENT REFERENCES:
-- Agent IDs repeat each round. "Agent X (R1)" and "Agent X (R2)" are DIFFERENT agents from different rounds.
-- When you see "Agent {agent_id}" in the history with a different round number, that is NOT you - it's a different agent.
-- Agents do NOT self-evaluate by design. If an agent didn't evaluate themselves, that is CORRECT behavior, not a flaw.
-- Only evaluate agents whose contributions appear in your visible history.
 
 INSTRUCTIONS:
 You should structure your response into three sections: Solution, Evaluation, and Comparison. Follow the instructions for each section carefully.
@@ -370,23 +350,18 @@ You should structure your response into three sections: Solution, Evaluation, an
    - Exclude yourself (Agent {agent_id}) from all comparisons.
 
 OUTPUT FORMAT:
-Output strictly in these XML tags:
 
 <solution>
-[Step-by-step derivation.]
-[Final Answer: \\boxed{{...}}]
+[Step-by-step solution. MUST end with \\boxed{{answer}}]
 </solution>
 
 <evaluation>
-[If no other agents have spoken, write "N/A". Otherwise, provide step-by-step derivation and evaluation for the agents in the visible history. Use format: Agent X (RN) for clarity.]
+[Review other agents' solutions. Write "N/A" if you're first.]
 </evaluation>
 
 <comparison>
-[If fewer than 2 other agents exist in visible history, write "N/A".]
-[Compare agents' contributions in the history.]
-[Format: Agent X (RN) > Agent Y (RM) OR Agent X (RN) < Agent Y (RM), and explain your reasoning.]
-[Use only > or < operators (you must choose which agent is better).]
-[Do not include Agent {agent_id} in the comparisons.]
+[Rank pairs of other agents, e.g., "Agent 0 > Agent 1". Write "N/A" if fewer than 2 others.]
+[Use only > or < (you must pick a winner). Do not include yourself (Agent {agent_id}).]
 </comparison>
 """.strip()
 
@@ -527,10 +502,7 @@ def parse_agent_response(
     comparisons: list[tuple[int, str, int]] = []
     self_comparisons_dropped = 0
     if comparison_text:
-        # Accept both:
-        # - "Agent 1 > Agent 2"
-        # - "Agent 1 (R1) > Agent 2 (R2)"
-        # (The system prompts often encourage including round annotations.)
+        # Match "Agent 1 > Agent 2" (also tolerates legacy "(R1)" round annotations)
         pair_pattern = re.compile(
             r"Agent\s+(\d+)(?:\s*\(R\d+\))?\s*([><])\s*Agent\s+(\d+)(?:\s*\(R\d+\))?",
             flags=re.IGNORECASE,

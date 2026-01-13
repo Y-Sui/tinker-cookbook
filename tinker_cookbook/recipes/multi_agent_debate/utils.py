@@ -7,7 +7,7 @@ from tinker_cookbook.utils import logtree
 if TYPE_CHECKING:
     from tinker_cookbook.recipes.multi_agent_debate.env import MultiAgentCoordinator
 
-from .prompts import AGENT_SYSTEM_PROMPT
+from .prompts import AGENT_SYSTEM_PROMPT, format_persona_intro
 
 # Stop when we see the closing tag of the last required field
 STOP_CONDITION = ["</comparison>"]
@@ -57,7 +57,13 @@ def log_debate_transcript(coordinator: "MultiAgentCoordinator") -> None:
             with logtree.scope_header(f"Turn {turn_idx}"):
                 with logtree.scope_header(f"Agent {response.author_id}"):
                     with logtree.scope_details("System prompt"):
-                        logtree.log_text(AGENT_SYSTEM_PROMPT.format(agent_id=response.author_id))
+                        persona_intro = format_persona_intro(response.author_id)
+                        logtree.log_text(
+                            AGENT_SYSTEM_PROMPT.format(
+                                agent_id=response.author_id,
+                                persona_intro=persona_intro,
+                            )
+                        )
                     if response.observation:
                         with logtree.scope_details("Observation (context)"):
                             logtree.log_text(response.observation)
@@ -94,7 +100,7 @@ def log_direct_evaluation(
 
 
 def log_debate_evaluation_final_solutions(
-    agent_solutions: list[tuple[int, str | None, str, dict[str, float]]]
+    agent_solutions: list[tuple[int, str | None, str, dict[str, float]]],
 ) -> None:
     """Log final solutions and metrics for each agent in debate evaluation.
 
