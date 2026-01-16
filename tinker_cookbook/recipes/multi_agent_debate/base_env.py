@@ -280,7 +280,6 @@ class BaseMultiAgentEnvGroupBuilder(EnvGroupBuilder, ABC):
         Reward computation:
         - Each comparison provides ±1.0 reward assigned to the specific step being compared
         - Format penalties: -0.5 per missing comparison (if enable_format_penalty=True)
-        - Advantage normalization: center rewards by subtracting mean across agents
 
         Returns summary metrics.
         """
@@ -359,44 +358,7 @@ class BaseMultiAgentEnvGroupBuilder(EnvGroupBuilder, ABC):
                     step_rewards[author_id][author_step_idx] += FORMAT_PENALTY
                     missing_comparisons += 1
 
-        # Step 3: Compute total reward for each agent (sum of all step rewards)
-        agent_totals = [sum(step_rewards[agent_id]) for agent_id in range(self.num_agents)]
-
-        # Step 4: Apply advantage normalization (center rewards by subtracting mean)
-        # This ensures above-average agents get positive rewards, below-average get negative,
-        # and maintains zero-sum property for multi-agent competition
-        mean_reward = sum(agent_totals) / len(agent_totals) if agent_totals else 0.0
-
-        # Distribute the centering offset uniformly across each agent's steps
-        for agent_id in range(self.num_agents):
-            num_steps = len(trajectory_group[agent_id].transitions)
-            if num_steps == 0:
-                continue
-
-            # Uniform normalization offset per step
-            normalization_offset = mean_reward / num_steps
-
-            for step_idx in range(num_steps):
-                step_rewards[agent_id][step_idx] -= normalization_offset
-
-        # Step 5: Assign final rewards to trajectory transitions
-        for agent_id in range(self.num_agents):
-            trajectory = trajectory_group[agent_id]
-            for step_idx, transition in enumerate(trajectory.transitions):
-                transition.reward += step_rewards[agent_id][step_idx]
-
-        # Compute centered agent totals for metrics
-        centered_agent_totals = [total - mean_reward for total in agent_totals]
-
-        # Step 6: Return summary metrics
         return {
             "stepwise_comparisons_used": total_valid_comparisons,
             "missing_comparisons": missing_comparisons,
-            "mean_reward_before_centering": mean_reward,
-            "max_reward_after_centering": (
-                max(centered_agent_totals) if centered_agent_totals else 0.0
-            ),
-            "min_reward_after_centering": (
-                min(centered_agent_totals) if centered_agent_totals else 0.0
-            ),
         }

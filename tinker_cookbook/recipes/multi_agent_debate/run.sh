@@ -532,8 +532,9 @@ python -m tinker_cookbook.recipes.multi_agent_debate.train \
     verifiable_answer_field="answer" \
     verifiable_grader="sympy" \
     wandb_project="CANT-01-12" \
-    wandb_name="Updated-Qwen3-8B-decay-format-penalty-disable-thinking-0112-aime24" \
-    enable_format_penalty=True
+    wandb_name="Updated-Qwen3-8B-decay-format-penalty-disable-thinking-0112-aime24-ppo" \
+    enable_format_penalty=True \
+    disable_eval=True \
 
 
 python -m tinker_cookbook.recipes.multi_agent_debate.train \
