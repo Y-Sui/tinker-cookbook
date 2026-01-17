@@ -353,6 +353,50 @@ num_groups_to_log=0 log_full_transcript=False
 3. **Disable eval during training**: `disable_eval=True` for faster iteration
 4. **Use smaller models for debugging**: `model_name="Qwen/Qwen3-1.5B"`
 
+## Research Documentation
+
+Comprehensive research-style documentation is available in the `doc/` directory:
+
+### Algorithm & Theory
+
+- **`doc/algorithm_flowchart.md`**: Visual overview of the complete training flow
+  - Turn-by-turn execution diagram
+  - Coordinator synchronization logic
+  - Reward computation pipeline
+
+- **`doc/math_formulation.md`**: Mathematical formulation and implementation details
+  - Formal problem definition
+  - V2 reward system equations (soft vote ratio + consensus alignment)
+  - Current behavior documentation (including edge cases)
+
+### Research Guide
+
+- **`doc/research_overview.md`**: Full research paper-style overview
+  - Abstract, introduction, and motivation
+  - Detailed method description (debate protocol, reward system v2)
+  - Results analysis and identified issues
+  - Future directions and open questions
+  - **Recommended reading for researchers**
+
+### Training Analysis
+
+- **`doc/training_analysis_aime.md`**: Why training doesn't improve on AIME 2024
+  - Root cause analysis (task difficulty, reward signal quality, exploration)
+  - Diagnostic questions and experimental protocols
+  - Concrete solutions (curriculum learning, ground-truth mixing, warm-start)
+  - Action plan with expected outcomes
+  - **Must-read if training on hard mathematical reasoning tasks**
+
+### Experimental Protocol
+
+- **`doc/experimental_protocol.md`**: Standardized experimental procedures
+  - Standard configurations (baseline, fast iteration, production)
+  - Dataset-specific hyperparameters (GSM8K, MATH, AIME)
+  - Ablation study templates
+  - Curriculum learning protocols
+  - Reproducibility checklist
+  - **Essential for running systematic experiments**
+
 ## Citation
 
 If you use this recipe, please cite:
@@ -368,7 +412,6 @@ If you use this recipe, please cite:
 
 ## See Also
 
-- `doc/algorithm_flowchart.md`: Visual overview of the debate protocol
-- `doc/math_formulation.md`: Mathematical formulation of reward system
 - `../math_rl/`: Single-agent math RL for comparison
 - `../../docs/rl.mdx`: General RL documentation for Tinker
+- `../../docs/training-sampling.mdx`: Training and sampling basics
