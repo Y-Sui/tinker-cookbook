@@ -41,6 +41,14 @@ class MultiAgentDebateEnv(BaseMultiAgentDebateEnv):
         )
 
     def _format_turns(self, turns: list[ParsedResponse], num_turns: int) -> str:
+        """Format history with blind review (comparisons are hidden).
+
+        Blind review ensures agents form independent judgments by hiding
+        previous <comparison> tags. This prevents bandwagon effects and
+        produces more meaningful consensus for reward computation.
+
+        Only <solution> and <evaluation> are shown in history.
+        """
         if not turns or num_turns == 0:
             return ""
         lines: list[str] = []
@@ -56,33 +64,33 @@ class MultiAgentDebateEnv(BaseMultiAgentDebateEnv):
             display_turn_idx = idx + 1  # 1-based index aligned to the original conversation
             agent_label = f"Agent {response.author_id}"
 
-            lines.append(
-                f"== Turn {display_turn_idx}/{self.coordinator.state.max_turns} ({agent_label}) ==\n"
-            )
+            total_max_turns = self.coordinator.state.max_cycles * num_agents
+            lines.append(f"== Turn {display_turn_idx}/{total_max_turns} ({agent_label}) ==\n")
             lines.append(f"{agent_label}'s Solution:")
             lines.append(response.solution.rstrip())
             lines.append("\n")
             lines.append(f"{agent_label}'s Evaluation:")
             lines.append(response.evaluation.rstrip())
             lines.append("\n")
-            if response.comparison_text:
-                lines.append(f"{agent_label}'s Comparison:")
-                lines.append(response.comparison_text.rstrip())
+            # BLIND REVIEW: Comparisons are intentionally hidden from history
+            # so that each agent forms independent judgments
             lines.append("== End of Turn ==\n")
         return "\n".join(lines).rstrip()
 
     async def get_conversation_context(self) -> str:
         """Format the conversation context for this agent."""
-        if not self.coordinator.state.agent_responses or self.history_turns == 0:
+        if not self.coordinator.state.agent_responses:
             return ""
 
         question = self.coordinator.state.question
         turns = list(self.coordinator.state.agent_responses)
+        num_agents = self.coordinator.state.num_agents
+        history_turns = num_agents
 
         history_turns = (
             f"Question: {question}\n"
             f"Previous turns of conversation:\n"
-            f"{self._format_turns(turns, self.history_turns)}".rstrip()
+            f"{self._format_turns(turns, history_turns)}".rstrip()
             + "\n"
         )
 
@@ -91,22 +99,40 @@ class MultiAgentDebateEnv(BaseMultiAgentDebateEnv):
     async def get_observation_string(self) -> str:
         """Get the observation string for this agent."""
         history = await self.get_conversation_context()
-        turn_idx = self.coordinator.state.current_turn
-        agent_id = self.coordinator.state.current_agent_id
+        current_cycle = self.coordinator.state.get_current_cycle()
+        num_agents = self.coordinator.state.num_agents
 
-        # First turn prompt
-        if turn_idx == 0:
+        # With parallel generation, count OTHER agents from committed responses only.
+        # In cycle N, all agents see responses from cycles 0..N-1.
+        # All other (num_agents - 1) agents have responded in previous cycles if cycle > 0.
+        num_other_agents = num_agents - 1 if current_cycle > 0 else 0
+
+        # Build guidance for evaluation and comparison based on what's available
+        if num_other_agents == 0:
+            eval_guidance = 'Set <evaluation> to "N/A" (no other agents have responded yet).'
+            comp_guidance = 'Set <comparison> to "N/A" (no other agents to compare).'
+        elif num_other_agents == 1:
+            eval_guidance = "Evaluate the other agent's solution and reasoning."
+            comp_guidance = 'Set <comparison> to "N/A" (need at least 2 other agents to compare).'
+        else:
+            eval_guidance = "Evaluate each other agent's solution and reasoning."
+            comp_guidance = (
+                f"Compare pairs of other agents (do not include yourself, Agent {self.agent_id})."
+            )
+
+        # First cycle prompt (no history available)
+        if current_cycle == 0:
             return (
                 f"Question: {self.coordinator.state.question}\n\n"
-                "First completion: propose your solution.\n"
-                'Set <evaluation> to "N/A" and <comparison> to "N/A".'
+                f"Agent {self.agent_id}, please proceed with your response.\n"
+                f"{eval_guidance}\n{comp_guidance}"
             )
         else:
-            # Regular turn prompt
+            # Regular turn prompt (with history from previous cycles)
             return (
                 f"{history}\n\nQuestion: {self.coordinator.state.question}\n\n"
-                f"Agent {agent_id}, please continue the debate by providing your solution, evaluation, and comparison. "
-                f"Do not include Agent {agent_id} in your comparisons."
+                f"Agent {self.agent_id}, it is your turn.\n"
+                f"{eval_guidance}\n{comp_guidance}"
             )
 
 
@@ -118,7 +144,6 @@ class MultiAgentEnvGroupBuilder(BaseMultiAgentEnvGroupBuilder):
     question_index: int  # Which question to use for this group
     max_rounds: int
     self_play: bool
-    history_turns: int = 2
     log_full_transcript: bool = False
 
     async def make_envs(self) -> Sequence[Env]:
@@ -140,7 +165,6 @@ class MultiAgentEnvGroupBuilder(BaseMultiAgentEnvGroupBuilder):
                 coordinator=coordinator,
                 renderer=self.renderer,
                 self_play=True,
-                history_turns=self.history_turns,
                 summarize_history=self.summarize_history,
                 _summarizer_policy=shared_summarizer,
                 model_name=self.model_name,
@@ -151,6 +175,14 @@ class MultiAgentEnvGroupBuilder(BaseMultiAgentEnvGroupBuilder):
     async def compute_group_rewards(
         self, trajectory_group: list[Trajectory], env_group: Sequence[Env]
     ) -> list[tuple[float, Metrics]]:
+        """Compute rewards using v2 system (soft vote ratio + consensus alignment).
+
+        Uses v2 reward system:
+        - gen_rewards: Soft vote ratio for <solution>/<evaluation> tokens
+        - judge_rewards: Consensus alignment for <comparison> tokens
+
+        Per-step rewards are already stored in trajectory transitions.
+        """
         assert env_group, "empty env_group"
 
         # Self-play: all envs share a coordinator, so compute once.
@@ -164,19 +196,52 @@ class MultiAgentEnvGroupBuilder(BaseMultiAgentEnvGroupBuilder):
                 # This is the easiest way to inspect the entire conversation across all turns/agents.
                 log_debate_transcript(coordinator)
 
-            # Populate step-wise rewards in trajectories
-            stepwise_metrics = self._populate_stepwise_rewards(trajectory_group, env_group)
+            # Use v2 reward system (soft vote ratio + consensus alignment)
+            # gen_rewards and judge_rewards are computed but only used for metrics
+            gen_rewards, judge_rewards, v2_metrics = self._compute_rewards_v2(
+                trajectory_group, env_group
+            )
+
+            # Store rewards in trajectory group for later data assembly
+            # Use object.__setattr__ to bypass frozen dataclass restriction
+            for agent_id in range(self.num_agents):
+                object.__setattr__(
+                    trajectory_group[agent_id], "gen_rewards", gen_rewards.get(agent_id, [])
+                )
+                object.__setattr__(
+                    trajectory_group[agent_id], "judge_rewards", judge_rewards.get(agent_id, [])
+                )
+
+            # Compute reward statistics for metrics logging
+            import numpy as np
+
+            all_gen_rewards = [
+                r for agent_id in range(self.num_agents) for r in gen_rewards.get(agent_id, [])
+            ]
+            all_judge_rewards = [
+                r for agent_id in range(self.num_agents) for r in judge_rewards.get(agent_id, [])
+            ]
+
+            if all_gen_rewards:
+                v2_metrics["reward/gen/mean"] = float(np.mean(all_gen_rewards))
+                v2_metrics["reward/gen/std"] = float(np.std(all_gen_rewards))
+            if all_judge_rewards:
+                v2_metrics["reward/judge/mean"] = float(np.mean(all_judge_rewards))
+                v2_metrics["reward/judge/std"] = float(np.std(all_judge_rewards))
 
             return [
                 (
                     0.0,  # No final reward (all rewards are in steps)
                     {
                         "agent_id": agent_id,
-                        **stepwise_metrics,
+                        **v2_metrics,
                     },
                 )
                 for agent_id in range(self.num_agents)
             ]
+
+        # Non-self-play mode (not used, but needed for type safety)
+        return [(0.0, {}) for _ in range(self.num_agents)]
 
 
 class MultiAgentDebateDataset(RLDataset):
@@ -189,7 +254,6 @@ class MultiAgentDebateDataset(RLDataset):
         num_agents: int,
         renderer: Renderer,
         self_play: bool,
-        history_turns: int,
         summarize_history: bool,
         summarize_model: str | None,
         log_full_transcript: bool,
@@ -203,7 +267,6 @@ class MultiAgentDebateDataset(RLDataset):
         self.num_agents = num_agents
         self.renderer = renderer
         self.self_play = self_play
-        self.history_turns = history_turns
         self.summarize_history = summarize_history
         self.summarize_model = summarize_model
         self.log_full_transcript = log_full_transcript
@@ -224,7 +287,6 @@ class MultiAgentDebateDataset(RLDataset):
                 renderer=self.renderer,
                 num_agents=self.num_agents,
                 self_play=self.self_play,
-                history_turns=self.history_turns,
                 summarize_history=self.summarize_history,
                 summarize_model=self.summarize_model,
                 log_full_transcript=self.log_full_transcript,
@@ -250,7 +312,6 @@ class MultiAgentDebateDatasetBuilder(RLDatasetBuilder):
     num_test_datapoints: int
     num_agents: int = 3
     max_rounds: int = 3
-    history_rounds: int = 2  # number of turns of history to include
     summarize_history: bool = False
     summarize_model: str | None = None
     log_full_transcript: bool = False
@@ -260,6 +321,7 @@ class MultiAgentDebateDatasetBuilder(RLDatasetBuilder):
     problem_field: str = "query"
     max_questions: int = -1  # No limit by default
     enable_format_penalty: bool = True
+    enable_sequence_extension: bool = True  # Preserve thinking in history for O(T) compute
 
     def load_questions(self) -> list[str]:
         return load_questions_from_jsonl(
@@ -275,7 +337,16 @@ class MultiAgentDebateDatasetBuilder(RLDatasetBuilder):
 
         Repeats the base dataset `epoch` times by scaling num_train_datapoints.
         """
-        renderer = get_renderer(self.renderer_name, get_tokenizer(self.model_name))
+        # Create renderer with sequence extension if requested
+        tokenizer = get_tokenizer(self.model_name)
+        if self.enable_sequence_extension and self.renderer_name == "qwen3_disable_thinking":
+            # Enable sequence extension by preserving thinking in history
+            from tinker_cookbook.renderers.qwen3 import Qwen3DisableThinkingRenderer
+
+            renderer = Qwen3DisableThinkingRenderer(tokenizer, strip_thinking_from_history=False)
+        else:
+            renderer = get_renderer(self.renderer_name, tokenizer)
+
         train_questions = self.load_questions()
         if self.num_train_datapoints > len(train_questions) or self.num_train_datapoints < 0:
             total_train_datapoints = len(train_questions) * self.epoch
@@ -288,7 +359,6 @@ class MultiAgentDebateDatasetBuilder(RLDatasetBuilder):
             num_agents=self.num_agents,
             renderer=renderer,
             self_play=True,
-            history_turns=self.history_rounds,
             summarize_history=self.summarize_history,
             summarize_model=self.summarize_model,
             log_full_transcript=self.log_full_transcript,
@@ -309,7 +379,6 @@ class MultiAgentDebateDatasetBuilder(RLDatasetBuilder):
         #         num_agents=self.num_agents,
         #         renderer=renderer,
         #         self_play=True,
-        #         history_turns=self.history_rounds,
         #         summarize_history=self.summarize_history,
         #         summarize_model=self.summarize_model,
         #         log_full_transcript=self.log_full_transcript,

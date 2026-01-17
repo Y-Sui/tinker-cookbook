@@ -41,13 +41,18 @@ class CLIConfig:
     renderer_name: str | None = "qwen3_disable_thinking"
     max_tokens: int = 8196
 
+    # Sequence extension: preserve thinking in history for O(T) compute scaling
+    # When True, empty <think></think> blocks are preserved in multi-turn history,
+    # enabling sequence extension property (~9x faster training for 9-turn episodes).
+    # When False, matches HuggingFace exact behavior but results in O(T²) scaling.
+    enable_sequence_extension: bool = True
+
     # ============================================================================
     # Environment Configuration
     # ============================================================================
     env: str = "verifiable"  # Options: verifiable, non-verifiable
     num_agents: int = 3  # Number of agents in debate
     max_rounds: int = 3  # Maximum debate rounds
-    history_rounds: int = 2  # Recent turns in context (-1 = entire history)
 
     # ============================================================================
     # Training Configuration
@@ -92,9 +97,11 @@ class CLIConfig:
     max_questions: int = -1  # Max problems to load (-1 = all)
 
     # ============================================================================
-    # Reward System Configuration
+    # Reward System Configuration (v2)
     # ============================================================================
     enable_format_penalty: bool = True  # Penalize missing/invalid comparisons
+    lambda_gen: float = 1.0  # Weight for generator loss (<solution>/<evaluation> tokens)
+    lambda_judge: float = 1.0  # Weight for judge loss (<comparison> tokens)
 
     # ============================================================================
     # Weights & Biases Configuration
@@ -113,7 +120,6 @@ def _build_verifiable_dataset_builder(
         epoch=cli_config.epoch,
         num_agents=cli_config.num_agents,
         max_rounds=cli_config.max_rounds,
-        history_rounds=cli_config.history_rounds,
         summarize_history=cli_config.summarize_history,
         summarize_model=cli_config.summarize_model,
         log_full_transcript=cli_config.log_full_transcript,
@@ -125,6 +131,7 @@ def _build_verifiable_dataset_builder(
         grader=cli_config.verifiable_grader,
         max_questions=cli_config.max_questions,
         enable_format_penalty=cli_config.enable_format_penalty,
+        enable_sequence_extension=cli_config.enable_sequence_extension,
     )
 
 
@@ -139,7 +146,6 @@ def _build_non_verifiable_dataset_builder(
         num_test_datapoints=64,  # Keep test dataset for non-verifiable
         num_agents=cli_config.num_agents,
         max_rounds=cli_config.max_rounds,
-        history_rounds=cli_config.history_rounds,
         summarize_history=cli_config.summarize_history,
         summarize_model=cli_config.summarize_model,
         log_full_transcript=cli_config.log_full_transcript,
@@ -149,6 +155,7 @@ def _build_non_verifiable_dataset_builder(
         problem_field=cli_config.non_verifiable_problem_field,
         max_questions=cli_config.max_questions,
         enable_format_penalty=cli_config.enable_format_penalty,
+        enable_sequence_extension=cli_config.enable_sequence_extension,
     )
 
 
@@ -201,6 +208,8 @@ def build_config(cli_config: CLIConfig) -> train.Config:
         wandb_project=wandb_project,
         wandb_name=wandb_name,
         use_stepwise_advantages=True,
+        lambda_gen=cli_config.lambda_gen,
+        lambda_judge=cli_config.lambda_judge,
     )
 
 
@@ -215,7 +224,6 @@ def _create_verifiable_evaluator(cli_config: CLIConfig, train_dataset) -> MultiA
         renderer=train_dataset.renderer,
         num_agents=cli_config.num_agents,
         max_rounds=cli_config.max_rounds,
-        history_rounds=cli_config.history_rounds,
         summarize_history=cli_config.summarize_history,
         summarize_model=cli_config.summarize_model,
         log_full_transcript=cli_config.log_full_transcript,

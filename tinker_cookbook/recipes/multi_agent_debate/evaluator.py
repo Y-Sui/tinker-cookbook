@@ -23,7 +23,6 @@ class MultiAgentDebateEvaluator(SamplingClientEvaluator):
         renderer,
         num_agents: int,
         max_rounds: int,
-        history_rounds: int,
         summarize_history: bool,
         summarize_model: str | None,
         log_full_transcript: bool,
@@ -38,7 +37,6 @@ class MultiAgentDebateEvaluator(SamplingClientEvaluator):
         self.renderer = renderer
         self.num_agents = num_agents
         self.max_rounds = max_rounds
-        self.history_rounds = history_rounds
         self.summarize_history = summarize_history
         self.summarize_model = summarize_model
         self.log_full_transcript = log_full_transcript
@@ -109,7 +107,6 @@ class MultiAgentDebateEvaluator(SamplingClientEvaluator):
                 renderer=self.renderer,
                 num_agents=1,  # Single agent for direct eval
                 self_play=True,
-                history_turns=0,
                 summarize_history=False,
                 summarize_model=None,
                 log_full_transcript=self.log_full_transcript and i < self.num_groups_to_log,
@@ -135,7 +132,6 @@ class MultiAgentDebateEvaluator(SamplingClientEvaluator):
                 renderer=self.renderer,
                 num_agents=self.num_agents,
                 self_play=True,
-                history_turns=self.history_rounds,
                 summarize_history=self.summarize_history,
                 summarize_model=self.summarize_model,
                 log_full_transcript=self.log_full_transcript and i < self.num_groups_to_log,

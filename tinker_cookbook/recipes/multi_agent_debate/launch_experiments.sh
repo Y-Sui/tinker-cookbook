@@ -23,7 +23,6 @@ tmux send-keys -t $SESSION:0 'python -m tinker_cookbook.recipes.multi_agent_deba
     env="verifiable" \
     num_agents=3 \
     max_rounds=3 \
-    history_rounds=2 \
     batch_size=16 \
     num_train_datapoints=-1 \
     epoch=6 \
@@ -53,7 +52,6 @@ tmux send-keys -t $SESSION:0 'python -m tinker_cookbook.recipes.multi_agent_deba
 #     env="verifiable" \
 #     num_agents=3 \
 #     max_rounds=3 \
-#     history_rounds=2 \
 #     batch_size=16 \
 #     num_train_datapoints=-1 \
 #     epoch=3 \
@@ -83,7 +81,6 @@ tmux send-keys -t $SESSION:2 'python -m tinker_cookbook.recipes.multi_agent_deba
     env="verifiable" \
     num_agents=3 \
     max_rounds=3 \
-    history_rounds=2 \
     batch_size=16 \
     num_train_datapoints=-1 \
     epoch=6 \
@@ -113,7 +110,6 @@ tmux send-keys -t $SESSION:2 'python -m tinker_cookbook.recipes.multi_agent_deba
 #     env="verifiable" \
 #     num_agents=3 \
 #     max_rounds=3 \
-#     history_rounds=2 \
 #     batch_size=16 \
 #     num_train_datapoints=-1 \
 #     epoch=3 \
@@ -143,7 +139,6 @@ tmux send-keys -t $SESSION:2 'python -m tinker_cookbook.recipes.multi_agent_deba
 #     env="verifiable" \
 #     num_agents=3 \
 #     max_rounds=3 \
-#     history_rounds=2 \
 #     batch_size=16 \
 #     num_train_datapoints=-1 \
 #     epoch=3 \
@@ -173,7 +168,6 @@ tmux send-keys -t $SESSION:2 'python -m tinker_cookbook.recipes.multi_agent_deba
 #     env="verifiable" \
 #     num_agents=3 \
 #     max_rounds=3 \
-#     history_rounds=2 \
 #     batch_size=16 \
 #     num_train_datapoints=-1 \
 #     epoch=3 \
@@ -203,7 +197,6 @@ tmux send-keys -t $SESSION:2 'python -m tinker_cookbook.recipes.multi_agent_deba
 #     env="verifiable" \
 #     num_agents=3 \
 #     max_rounds=3 \
-#     history_rounds=2 \
 #     batch_size=16 \
 #     num_train_datapoints=-1 \
 #     epoch=3 \

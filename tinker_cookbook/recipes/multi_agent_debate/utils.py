@@ -46,38 +46,55 @@ def get_step_idx_before_turn(agent_id: int, turn_idx: int, num_agents: int) -> i
     return step_idx
 
 
-def log_debate_transcript(coordinator: "MultiAgentCoordinator") -> None:
+def log_debate_transcript(
+    coordinator: "MultiAgentCoordinator",
+    *,
+    metrics_by_agent: list[dict[str, float]] | None = None,
+) -> None:
     with logtree.scope_header("Debate Transcript"):
         logtree.log_text(f"Question: {coordinator.state.question}")
+        num_agents = coordinator.state.num_agents
+        logtree.log_text(f"History policy: last round only ({num_agents} turns).")
         turns = coordinator.state.agent_responses
         if not turns:
             logtree.log_text("(No responses captured)")
             return
-        for turn_idx, response in enumerate(turns, start=1):
-            with logtree.scope_header(f"Turn {turn_idx}"):
-                with logtree.scope_header(f"Agent {response.author_id}"):
-                    with logtree.scope_details("System prompt"):
-                        persona_intro = format_persona_intro(response.author_id)
-                        logtree.log_text(
-                            AGENT_SYSTEM_PROMPT.format(
-                                agent_id=response.author_id,
-                                persona_intro=persona_intro,
+        num_cycles = (len(turns) + num_agents - 1) // num_agents
+        for cycle_idx in range(num_cycles):
+            cycle_start = cycle_idx * num_agents
+            cycle_end = cycle_start + num_agents
+            cycle_turns = turns[cycle_start:cycle_end]
+            with logtree.scope_header(f"Cycle {cycle_idx + 1}"):
+                for offset, response in enumerate(cycle_turns):
+                    turn_idx = cycle_start + offset + 1
+                    with logtree.scope_header(f"Turn {turn_idx} (Agent {response.author_id})"):
+                        with logtree.scope_details("System prompt"):
+                            persona_intro = format_persona_intro(response.author_id)
+                            logtree.log_text(
+                                AGENT_SYSTEM_PROMPT.format(
+                                    agent_id=response.author_id,
+                                    persona_intro=persona_intro,
+                                )
                             )
-                        )
-                    if response.observation:
-                        with logtree.scope_details("Observation (context)"):
-                            logtree.log_text(response.observation)
-                    if response.solution:
-                        with logtree.scope_details("Solution"):
-                            logtree.log_text(response.solution)
-                    if response.evaluation:
-                        with logtree.scope_details("Evaluation"):
-                            logtree.log_text(response.evaluation)
-                    if response.comparison_text:
-                        with logtree.scope_details("Comparison"):
-                            logtree.log_text(response.comparison_text)
-                    with logtree.scope_details("Raw response"):
-                        logtree.log_text(response.raw_response)
+                        if response.observation:
+                            with logtree.scope_details("Observation (context)"):
+                                logtree.log_text(response.observation)
+                        if response.solution:
+                            with logtree.scope_details("Solution"):
+                                logtree.log_text(response.solution)
+                        if response.evaluation:
+                            with logtree.scope_details("Evaluation"):
+                                logtree.log_text(response.evaluation)
+                        if response.comparison_text:
+                            with logtree.scope_details("Comparison"):
+                                logtree.log_text(response.comparison_text)
+                        with logtree.scope_details("Raw response"):
+                            logtree.log_text(response.raw_response)
+        if metrics_by_agent:
+            with logtree.scope_header("Evaluation Metrics"):
+                for agent_id, metrics in enumerate(metrics_by_agent):
+                    with logtree.scope_header(f"Agent {agent_id}"):
+                        logtree.log_text(str(metrics))
 
 
 def log_direct_evaluation(

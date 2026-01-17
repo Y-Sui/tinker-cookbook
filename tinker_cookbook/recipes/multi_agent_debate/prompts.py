@@ -68,7 +68,6 @@ Write a concise, information-dense summary that preserves:
 - The user question
 - Each agent's solution
 - Each agent's evaluations
-- Each agent's comparisons
 Don't add new information. Output plain text only in the following format. 
 
 Format: 
@@ -80,12 +79,10 @@ Turn-by-turn summary:
 Agent [first_agent_id]:
 - Solution: []
 - Evaluation: []
-- Comparisons: []
 
 Agent [second_agent_id]:
 - Solution: []
 - Evaluation: []
-- Comparisons: []
 
 Please summarize the debate in the above format.
 """
@@ -99,7 +96,7 @@ YOUR GOAL:
 Collaborate to provide the best possible answer to the user query while evaluating your peers.
 
 INPUT CONTEXT:
-You will receive a User Query and a History of previous turns (solutions, evaluations, and rankings from other agents).
+You will receive a User Query and a History of previous turns (solutions and evaluations from other agents).
 
 INSTRUCTIONS:
 
@@ -132,6 +129,7 @@ Output your response in these XML tags:
 [If fewer than 2 other agents, write "N/A".]
 [Compare pairs of other agents. One per line. Format: Agent X > Agent Y]
 [Use only > or < (you must choose which is better). Do not include Agent {agent_id}.]
+[No ties or equalities. Do NOT use "=", "≈", "tie", or prose explanations in <comparison>.]
 </comparison>
 """
 
@@ -141,7 +139,7 @@ You are Agent {agent_id}, a math problem solver in a multi-agent discussion.
 {persona_intro}
 
 INPUT CONTEXT:
-You will receive a User Query and a History of previous turns (if any). The User Query is a verifiable problem requiring a precise final answer. The History contains other agents' solutions, evaluations, and comparisons.
+You will receive a User Query and a History of previous turns (if any). The User Query is a verifiable problem requiring a precise final answer. The History contains other agents' solutions and evaluations.
 
 INSTRUCTIONS:
 You should structure your response into three sections: Solution, Evaluation, and Comparison. Follow the instructions for each section carefully.
@@ -153,15 +151,15 @@ You should structure your response into three sections: Solution, Evaluation, an
 
 **2. Evaluate Peers**:
    - Review the "History of previous turns".
-   - Check every line of other agents' solutions, evaluations, and comparisons (if any).
+   - Check every line of other agents' solutions and evaluations (if any).
    - Critique each other agent on two fronts: 
     (1) their solution correctness, completeness, and reasoning quality, did they arrive at the right final answer? and adequately justify it?; and
     (2) their evaluation quality, did they fairly and accurately assess others? did they spot errors or hallucinate?
 
 **3. Compare Peers**:
-   - Perform pairwise comparisons of agents visible in history (solution + evaluation + comparison).
+   - Perform pairwise comparisons of agents visible in history based on their solutions and evaluations.
    - Correctness is paramount. An agent with the correct final answer (derived correctly) > Agent with wrong answer.
-   - If both agents' solutions are correct, compare their reasoning depth, error analysis, and evaluation quality and their comparison from previous turns as well.
+   - If both agents' solutions are correct, compare their reasoning depth, error analysis, and evaluation quality.
    - Exclude yourself (Agent {agent_id}) from all comparisons.
 
 OUTPUT FORMAT:
@@ -177,6 +175,7 @@ OUTPUT FORMAT:
 <comparison>
 [Rank pairs of other agents, e.g., "Agent 0 > Agent 1". Write "N/A" if fewer than 2 others.]
 [Use only > or < (you must pick a winner). Do not include yourself (Agent {agent_id}).]
+[No ties or equalities. Do NOT use "=", "≈", "tie", or prose explanations in <comparison>.]
 </comparison>
 """.strip()
 
@@ -194,6 +193,9 @@ class ParsedResponse:
     observation: str = ""
     thinking: str = ""
     self_comparisons_dropped: int = 0
+    comparison_lines_total: int = 0
+    comparison_lines_invalid: int = 0
+    comparison_pairs_tie: int = 0
 
 
 def parse_agent_response(
@@ -316,20 +318,46 @@ def parse_agent_response(
 
     comparisons: list[tuple[int, str, int]] = []
     self_comparisons_dropped = 0
+    comparison_lines_total = 0
+    comparison_lines_invalid = 0
+    comparison_pairs_tie = 0
     if comparison_text:
         # Match "Agent 1 > Agent 2" (also tolerates legacy "(R1)" round annotations)
         pair_pattern = re.compile(
             r"Agent\s+(\d+)(?:\s*\(R\d+\))?\s*([><])\s*Agent\s+(\d+)(?:\s*\(R\d+\))?",
             flags=re.IGNORECASE,
         )
-        pairs = pair_pattern.findall(comparison_text)
-        for agent_a, op, agent_b in pairs:
-            a_id = int(agent_a)
-            b_id = int(agent_b)
-            if a_id == author_id or b_id == author_id:
-                self_comparisons_dropped += 1
+        tie_symbol_pattern = re.compile(
+            r"Agent\s+(\d+)(?:\s*\(R\d+\))?\s*(?:=|≈|==)\s*Agent\s+(\d+)(?:\s*\(R\d+\))?",
+            flags=re.IGNORECASE,
+        )
+        tie_word_pattern = re.compile(
+            r"Agent\s+(\d+)\s+and\s+Agent\s+(\d+)\s+(?:are|is)\s+(?:tied|equal)",
+            flags=re.IGNORECASE,
+        )
+        lines = [line.strip() for line in comparison_text.splitlines() if line.strip()]
+        comparison_lines_total = sum(1 for line in lines if line.lower() != "n/a")
+        for line in lines:
+            if line.lower() == "n/a":
                 continue
-            comparisons.append((a_id, op, b_id))
+            line_has_any = False
+            for match in pair_pattern.finditer(line):
+                line_has_any = True
+                agent_a, op, agent_b = match.groups()
+                a_id = int(agent_a)
+                b_id = int(agent_b)
+                if a_id == author_id or b_id == author_id:
+                    self_comparisons_dropped += 1
+                    continue
+                comparisons.append((a_id, op, b_id))
+            for match in tie_symbol_pattern.finditer(line):
+                line_has_any = True
+                comparison_pairs_tie += 1
+            for match in tie_word_pattern.finditer(line):
+                line_has_any = True
+                comparison_pairs_tie += 1
+            if not line_has_any:
+                comparison_lines_invalid += 1
 
     return ParsedResponse(
         solution=solution,
@@ -341,4 +369,7 @@ def parse_agent_response(
         observation=observation,
         thinking=thinking,
         self_comparisons_dropped=self_comparisons_dropped,
+        comparison_lines_total=comparison_lines_total,
+        comparison_lines_invalid=comparison_lines_invalid,
+        comparison_pairs_tie=comparison_pairs_tie,
     )

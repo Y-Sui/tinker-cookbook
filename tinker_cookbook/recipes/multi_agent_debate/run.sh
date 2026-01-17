@@ -30,7 +30,6 @@ python -m tinker_cookbook.recipes.multi_agent_debate.train \
     max_tokens=8196 \
     reward_mode="win_minus_loss" \
     summarize_history=True \
-    history_rounds=2
 
 
 python -m tinker_cookbook.recipes.multi_agent_debate.train \
@@ -48,7 +47,6 @@ python -m tinker_cookbook.recipes.multi_agent_debate.train \
     max_tokens=8196 \
     reward_mode="win_minus_loss" \
     summarize_history=False \
-    history_rounds=2
 
 
 # metrics saved in ~/tinker-examples/multi-agent-debate/Qwen/Qwen3-8B-debate-3agents-16groups-3e-05lr-2025-12-23-14-17/metrics.jsonl
@@ -196,7 +194,6 @@ python -m tinker_cookbook.recipes.multi_agent_debate.train \
     env="verifiable" \
     num_agents=3 \
     max_rounds=3 \
-    history_rounds=2 \
     batch_size=16 \
     num_train_datapoints=-1 \
     epoch=3 \
@@ -223,7 +220,6 @@ python -m tinker_cookbook.recipes.multi_agent_debate.train \
     env="verifiable" \
     num_agents=3 \
     max_rounds=3 \
-    history_rounds=2 \
     batch_size=16 \
     num_train_datapoints=-1 \
     epoch=3 \
@@ -250,7 +246,6 @@ python -m tinker_cookbook.recipes.multi_agent_debate.train \
     env="verifiable" \
     num_agents=3 \
     max_rounds=3 \
-    history_rounds=2 \
     batch_size=32 \
     num_train_datapoints=-1 \
     epoch=3 \
@@ -280,7 +275,6 @@ python -m tinker_cookbook.recipes.multi_agent_debate.train \
     env="verifiable" \
     num_agents=3 \
     max_rounds=3 \
-    history_rounds=2 \
     batch_size=16 \
     num_train_datapoints=-1 \
     epoch=3 \
@@ -307,7 +301,6 @@ python -m tinker_cookbook.recipes.multi_agent_debate.train \
     env="verifiable" \
     num_agents=3 \
     max_rounds=3 \
-    history_rounds=2 \
     batch_size=16 \
     num_train_datapoints=-1 \
     epoch=3 \
@@ -337,7 +330,6 @@ python -m tinker_cookbook.recipes.multi_agent_debate.train \
     env="verifiable" \
     num_agents=3 \
     max_rounds=3 \
-    history_rounds=2 \
     batch_size=16 \
     num_train_datapoints=-1 \
     epoch=3 \
@@ -365,7 +357,6 @@ python -m tinker_cookbook.recipes.multi_agent_debate.train \
     env="verifiable" \
     num_agents=3 \
     max_rounds=3 \
-    history_rounds=2 \
     batch_size=16 \
     num_train_datapoints=10 \
     epoch=1 \
@@ -392,7 +383,6 @@ python -m tinker_cookbook.recipes.multi_agent_debate.train \
     env="verifiable" \
     num_agents=3 \
     max_rounds=3 \
-    history_rounds=2 \
     batch_size=16 \
     num_train_datapoints=-1 \
     epoch=3 \
@@ -427,7 +417,6 @@ python -m tinker_cookbook.recipes.multi_agent_debate.train \
     env="verifiable" \
     num_agents=3 \
     max_rounds=3 \
-    history_rounds=2 \
     batch_size=16 \
     num_train_datapoints=-1 \
     epoch=1 \
@@ -457,7 +446,6 @@ python -m tinker_cookbook.recipes.multi_agent_debate.train \
     env="verifiable" \
     num_agents=3 \
     max_rounds=3 \
-    history_rounds=2 \
     batch_size=16 \
     num_train_datapoints=-1 \
     epoch=6 \
@@ -487,7 +475,6 @@ python -m tinker_cookbook.recipes.multi_agent_debate.train \
     env=verifiable \
     num_agents=3 \
     max_rounds=3 \
-    history_rounds=2 \
     batch_size=16 \
     num_train_datapoints=-1 \
     epoch=3 \
@@ -515,10 +502,9 @@ python -m tinker_cookbook.recipes.multi_agent_debate.train \
     env="verifiable" \
     num_agents=3 \
     max_rounds=3 \
-    history_rounds=2 \
     batch_size=16 \
     num_train_datapoints=-1 \
-    epoch=6 \
+    epoch=10 \
     learning_rate=3e-5 \
     eval_every=2 \
     save_every=10 \
@@ -531,8 +517,8 @@ python -m tinker_cookbook.recipes.multi_agent_debate.train \
     verifiable_problem_field="query" \
     verifiable_answer_field="answer" \
     verifiable_grader="sympy" \
-    wandb_project="CANT-01-12" \
-    wandb_name="Updated-Qwen3-8B-decay-format-penalty-disable-thinking-0112-aime24-ppo" \
+    wandb_project="CANT-01-17" \
+    wandb_name="Updated-Qwen3-8B-decay-format-penalty-disable-thinking-aime24-0117" \
     enable_format_penalty=True \
     disable_eval=True \
 
@@ -544,7 +530,6 @@ python -m tinker_cookbook.recipes.multi_agent_debate.train \
     env="verifiable" \
     num_agents=3 \
     max_rounds=3 \
-    history_rounds=2 \
     batch_size=16 \
     num_train_datapoints=-1 \
     epoch=6 \
@@ -560,6 +545,6 @@ python -m tinker_cookbook.recipes.multi_agent_debate.train \
     verifiable_problem_field="query" \
     verifiable_answer_field="answer" \
     verifiable_grader="sympy" \
-    wandb_project="CANT-01-12" \
+    wandb_project="CANT-01-17" \
     wandb_name="Updated-Qwen3-8B-decay-format-penalty-disable-thinking-0112-math500" \
     enable_format_penalty=True

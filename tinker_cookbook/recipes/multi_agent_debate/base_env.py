@@ -13,6 +13,7 @@ Design Pattern:
 """
 
 from abc import ABC, abstractmethod
+from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Sequence
 
@@ -36,6 +37,20 @@ from .utils import STOP_CONDITION, get_step_idx_before_turn
 # Reward system constants
 FORMAT_PENALTY = -0.5  # Penalty for missing/invalid comparisons
 FORMAT_EXEMPT_TURNS = 2  # Turns 0-1 exempt from format checking
+DEFAULT_LAMBDA_GEN = 1.0  # Weights for Generation
+DEFAULT_LAMBDA_JUDGE = 1.0  # Weights for Judge
+
+
+@dataclass
+class Vote:
+    """A single pairwise comparison vote for reward system v2."""
+
+    source_agent: int  # Who made the comparison
+    source_turn: int  # Global turn index
+    winner_agent: int  # Agent judged as better
+    winner_step: int  # Step index of winner
+    loser_agent: int  # Agent judged as worse
+    loser_step: int  # Step index of loser
 
 
 @dataclass
@@ -55,7 +70,6 @@ class BaseMultiAgentDebateEnv(Env, ABC):
         coordinator: Shared coordinator managing turn-taking
         renderer: Renderer for converting messages to/from token sequences
         self_play: Whether all agents use the same policy (must be True)
-        history_turns: Number of recent turns to include in context
         summarize_history: Whether to summarize older conversation history
         _summarizer_policy: Optional pre-created summarizer completer (shared across envs)
         model_name: Name of the base model
@@ -65,7 +79,6 @@ class BaseMultiAgentDebateEnv(Env, ABC):
     coordinator: MultiAgentCoordinator
     renderer: Renderer
     self_play: bool = True
-    history_turns: int = 2
     summarize_history: bool = False
     _summarizer_policy: MessageCompleter | None = None
     model_name: str | None = None
@@ -134,15 +147,13 @@ class BaseMultiAgentDebateEnv(Env, ABC):
         return get_text_content(resp).strip()
 
     async def initial_observation(self) -> tuple[Observation, StopCondition]:
-        """Get the initial observation for this agent."""
-        if self.agent_id != 0:
-            await self.wait_for_turn()
-        return await self.get_observation(), self.stop_condition
+        """Get the initial observation for this agent.
 
-    async def wait_for_turn(self) -> None:
-        """Wait until it's this agent's turn."""
-        if not self.coordinator.done:
-            await self.coordinator.wait_for_turn(self.agent_id)
+        With parallel generation, all agents wait for the cycle to start,
+        then proceed simultaneously.
+        """
+        await self.coordinator.wait_for_cycle_start(self.agent_id)
+        return await self.get_observation(), self.stop_condition
 
     async def get_observation(self) -> types.ModelInput:
         """Get the current observation for this agent."""
@@ -154,7 +165,13 @@ class BaseMultiAgentDebateEnv(Env, ABC):
         return self.renderer.build_generation_prompt(messages)
 
     async def step(self, action: Action) -> StepResult:
-        """Take a step in the environment."""
+        """Take a step in the environment.
+
+        With parallel generation:
+        1. All agents in a cycle submit their responses simultaneously
+        2. They all wait for the cycle to complete (all agents submitted)
+        3. Then they all get observations for the next cycle together
+        """
         if self.coordinator.done:
             return self.get_done_step()
 
@@ -164,14 +181,13 @@ class BaseMultiAgentDebateEnv(Env, ABC):
         action_message: Message = self.renderer.parse_response(action)[0]
         action_content = get_text_content(action_message)
 
+        # Submit response - this will wait for all agents to submit before returning
         await self.coordinator.submit_response(
             self.agent_id,
             action_content,
             observation=observation_str,
         )
 
-        # Wait for next turn
-        await self.wait_for_turn()
         # Per-step reward is 0 by default; the main learning signal is computed as a final group
         # reward by the EnvGroupBuilder using all pairwise comparisons.
         return StepResult(
@@ -362,3 +378,323 @@ class BaseMultiAgentEnvGroupBuilder(EnvGroupBuilder, ABC):
             "stepwise_comparisons_used": total_valid_comparisons,
             "missing_comparisons": missing_comparisons,
         }
+
+    # =========================================================================
+    # Reward System v2: Soft Vote Ratio + Consensus Alignment
+    # =========================================================================
+
+    def _collect_votes(self, coordinator: MultiAgentCoordinator) -> list[Vote]:
+        """
+        Parse all <comparison> tags from all rounds and build vote registry.
+
+        Constraints:
+        - Ignores self-votes (where source agent is comparing themselves)
+        - Ignores comparisons where either agent hasn't acted yet
+
+        Returns:
+            List of Vote objects representing all valid pairwise comparisons
+        """
+        votes: list[Vote] = []
+
+        for turn_idx, response in enumerate(coordinator.state.agent_responses):
+            source_agent = response.author_id
+
+            for agent_a, op, agent_b in response.comparisons:
+                # Validate agent IDs
+                if not (0 <= agent_a < self.num_agents and 0 <= agent_b < self.num_agents):
+                    continue
+                if agent_a == agent_b:
+                    continue
+                # Skip self-votes (source comparing themselves)
+                if agent_a == source_agent or agent_b == source_agent:
+                    continue
+
+                # Get step indices (most recent step before this turn)
+                step_a = get_step_idx_before_turn(agent_a, turn_idx, self.num_agents)
+                step_b = get_step_idx_before_turn(agent_b, turn_idx, self.num_agents)
+
+                # Skip if either agent hasn't acted yet
+                if step_a < 0 or step_b < 0:
+                    continue
+
+                # Determine winner/loser based on comparison operator
+                if op == ">":
+                    winner_agent, winner_step = agent_a, step_a
+                    loser_agent, loser_step = agent_b, step_b
+                elif op == "<":
+                    winner_agent, winner_step = agent_b, step_b
+                    loser_agent, loser_step = agent_a, step_a
+                else:
+                    continue
+
+                votes.append(
+                    Vote(
+                        source_agent=source_agent,
+                        source_turn=turn_idx,
+                        winner_agent=winner_agent,
+                        winner_step=winner_step,
+                        loser_agent=loser_agent,
+                        loser_step=loser_step,
+                    )
+                )
+
+        return votes
+
+    def _compute_generator_rewards(
+        self,
+        votes: list[Vote],
+        num_steps_per_agent: dict[int, int],
+    ) -> dict[int, list[float]]:
+        """
+        Compute soft vote ratio rewards for generator tokens (<solution> + <evaluation>).
+
+        For each (agent, step), computes:
+            R_gen = sum(votes_for) / count(votes)
+
+        Where votes_for is +1 for wins and -1 for losses.
+        Result is in range [-1, +1], providing dense gradient signal.
+
+        Args:
+            votes: List of Vote objects from _collect_votes()
+            num_steps_per_agent: {agent_id: num_steps} from trajectories
+
+        Returns:
+            {agent_id: [reward_per_step]} for generator rewards
+        """
+        # Accumulate votes per (agent, step)
+        vote_sums: dict[tuple[int, int], float] = defaultdict(float)
+        vote_counts: dict[tuple[int, int], int] = defaultdict(int)
+
+        for vote in votes:
+            # Winner gets +1
+            key_w = (vote.winner_agent, vote.winner_step)
+            vote_sums[key_w] += 1.0
+            vote_counts[key_w] += 1
+
+            # Loser gets -1
+            key_l = (vote.loser_agent, vote.loser_step)
+            vote_sums[key_l] -= 1.0
+            vote_counts[key_l] += 1
+
+        # Build reward dict with soft vote ratio
+        gen_rewards: dict[int, list[float]] = {}
+        for agent_id in range(self.num_agents):
+            num_steps = num_steps_per_agent.get(agent_id, 0)
+            rewards = []
+            for step in range(num_steps):
+                key = (agent_id, step)
+                if vote_counts[key] > 0:
+                    # Soft vote ratio: average of +1/-1 votes
+                    rewards.append(vote_sums[key] / vote_counts[key])
+                else:
+                    rewards.append(0.0)  # No votes = neutral
+            gen_rewards[agent_id] = rewards
+
+        return gen_rewards
+
+    def _compute_judge_rewards(
+        self,
+        votes: list[Vote],
+        coordinator: MultiAgentCoordinator,
+        num_steps_per_agent: dict[int, int],
+    ) -> tuple[dict[int, list[float]], int]:
+        """
+        Compute consensus-aligned rewards for judge tokens (<comparison>).
+
+        Two-stage process:
+        1. Build hard consensus for each pair across ALL rounds
+        2. Reward judges for aligning with consensus (+1) or disagreeing (-1)
+
+        For ties (equal votes), judge reward is 0 (no signal).
+
+        Args:
+            votes: List of Vote objects from _collect_votes()
+            coordinator: Coordinator with agent responses
+            num_steps_per_agent: {agent_id: num_steps} from trajectories
+
+        Returns:
+            Tuple of:
+            - {agent_id: [reward_per_step]} for judge rewards
+            - missing_comparisons: number of turns penalized for missing comparisons
+        """
+        # Step 1: Build consensus for each pair
+        # Key: (min_agent, min_step, max_agent, max_step) - normalized ordering
+        # Value: list of +1 (first agent won) or -1 (second agent won)
+        pair_votes: dict[tuple[int, int, int, int], list[int]] = defaultdict(list)
+
+        for vote in votes:
+            # Normalize key: smaller agent first for consistent ordering
+            if (vote.winner_agent, vote.winner_step) < (vote.loser_agent, vote.loser_step):
+                key = (vote.winner_agent, vote.winner_step, vote.loser_agent, vote.loser_step)
+                pair_votes[key].append(+1)  # First agent won
+            else:
+                key = (vote.loser_agent, vote.loser_step, vote.winner_agent, vote.winner_step)
+                pair_votes[key].append(-1)  # First agent lost (second won)
+
+        # Compute consensus: majority wins, ties = None
+        consensus: dict[tuple[int, int, int, int], int | None] = {}
+        for pair_key, vote_list in pair_votes.items():
+            total = sum(vote_list)
+            if total > 0:
+                consensus[pair_key] = +1  # First agent is better
+            elif total < 0:
+                consensus[pair_key] = -1  # Second agent is better
+            else:
+                consensus[pair_key] = None  # Tie - no signal
+
+        # Step 2: Evaluate each judge's comparisons against consensus
+        judge_reward_sums: dict[int, list[float]] = {
+            agent_id: [0.0] * num_steps_per_agent.get(agent_id, 0)
+            for agent_id in range(self.num_agents)
+        }
+        judge_counts: dict[int, list[int]] = {
+            agent_id: [0] * num_steps_per_agent.get(agent_id, 0)
+            for agent_id in range(self.num_agents)
+        }
+
+        for turn_idx, response in enumerate(coordinator.state.agent_responses):
+            source_agent = response.author_id
+            source_step = turn_idx // self.num_agents
+
+            if source_step >= len(judge_reward_sums.get(source_agent, [])):
+                continue
+
+            for agent_a, op, agent_b in response.comparisons:
+                # Skip self-comparisons and invalid comparisons
+                if agent_a == source_agent or agent_b == source_agent:
+                    continue
+                if agent_a == agent_b:
+                    continue
+
+                step_a = get_step_idx_before_turn(agent_a, turn_idx, self.num_agents)
+                step_b = get_step_idx_before_turn(agent_b, turn_idx, self.num_agents)
+
+                if step_a < 0 or step_b < 0:
+                    continue
+
+                # Build normalized key and determine judge's vote
+                if (agent_a, step_a) < (agent_b, step_b):
+                    key = (agent_a, step_a, agent_b, step_b)
+                    judge_vote = +1 if op == ">" else -1
+                else:
+                    key = (agent_b, step_b, agent_a, step_a)
+                    judge_vote = -1 if op == ">" else +1
+
+                ground_truth = consensus.get(key)
+
+                if ground_truth is None:
+                    # Tie: R_judge = 0, don't count toward average
+                    continue
+
+                # Alignment reward: +1 if aligned, -1 if not
+                if judge_vote == ground_truth:
+                    judge_reward_sums[source_agent][source_step] += 1.0
+                else:
+                    judge_reward_sums[source_agent][source_step] -= 1.0
+                judge_counts[source_agent][source_step] += 1
+
+        missing_comparisons = 0
+        if self.enable_format_penalty:
+            for turn_idx, response in enumerate(coordinator.state.agent_responses):
+                if turn_idx < FORMAT_EXEMPT_TURNS:
+                    continue
+
+                author_id = response.author_id
+                author_step = turn_idx // self.num_agents
+                if author_step >= len(judge_reward_sums.get(author_id, [])):
+                    continue
+
+                # Require at least two other agents to have acted for comparisons to be meaningful.
+                num_other_agents_who_have_acted = 0
+                for other_agent_id in range(self.num_agents):
+                    if other_agent_id == author_id:
+                        continue
+                    if get_step_idx_before_turn(other_agent_id, turn_idx, self.num_agents) >= 0:
+                        num_other_agents_who_have_acted += 1
+                if num_other_agents_who_have_acted < 2:
+                    continue
+
+                if len(response.comparisons) == 0:
+                    judge_reward_sums[author_id][author_step] += FORMAT_PENALTY
+                    judge_counts[author_id][author_step] += 1
+                    missing_comparisons += 1
+
+        # Average rewards per step
+        judge_rewards: dict[int, list[float]] = {}
+        for agent_id in range(self.num_agents):
+            rewards = []
+            for step in range(len(judge_reward_sums.get(agent_id, []))):
+                if judge_counts[agent_id][step] > 0:
+                    rewards.append(judge_reward_sums[agent_id][step] / judge_counts[agent_id][step])
+                else:
+                    rewards.append(0.0)
+            judge_rewards[agent_id] = rewards
+
+        return judge_rewards, missing_comparisons
+
+    def _compute_rewards_v2(
+        self,
+        trajectory_group: list[Trajectory],
+        env_group: Sequence[Env],
+    ) -> tuple[dict[int, list[float]], dict[int, list[float]], dict[str, float]]:
+        """
+        Compute rewards using v2 system (soft vote ratio + consensus alignment).
+
+        This replaces _populate_stepwise_rewards() with a two-reward-stream approach:
+        - gen_rewards: For <solution> and <evaluation> tokens (soft vote ratio)
+        - judge_rewards: For <comparison> tokens (consensus alignment)
+
+        Args:
+            trajectory_group: List of trajectories, one per agent
+            env_group: List of environments, one per agent
+
+        Returns:
+            Tuple of:
+            - gen_rewards: {agent_id: [reward_per_step]} for generator tokens
+            - judge_rewards: {agent_id: [reward_per_step]} for judge tokens
+            - metrics: Summary metrics dict
+        """
+        env0 = env_group[0]
+        if hasattr(env0, "coordinator"):
+            coordinator = env0.coordinator
+        else:
+            raise ValueError(f"Environment {type(env0)} does not have a coordinator")
+
+        # Get number of steps per agent from trajectories
+        num_steps_per_agent = {
+            agent_id: len(trajectory_group[agent_id].transitions)
+            for agent_id in range(self.num_agents)
+        }
+
+        # Collect all votes
+        votes = self._collect_votes(coordinator)
+
+        # Compute rewards
+        gen_rewards = self._compute_generator_rewards(votes, num_steps_per_agent)
+        judge_rewards, missing_comparisons = self._compute_judge_rewards(
+            votes, coordinator, num_steps_per_agent
+        )
+
+        # Build metrics
+        total_steps = sum(num_steps_per_agent.values())
+        comparison_lines_total = 0
+        comparison_lines_invalid = 0
+        self_comparisons_dropped = 0
+        comparison_pairs_tie = 0
+        for response in coordinator.state.agent_responses:
+            comparison_lines_total += response.comparison_lines_total
+            comparison_lines_invalid += response.comparison_lines_invalid
+            self_comparisons_dropped += response.self_comparisons_dropped
+            comparison_pairs_tie += response.comparison_pairs_tie
+
+        metrics = {
+            "v2/total_votes": float(len(votes)),
+            "v2/votes_per_step": float(len(votes)) / max(1, total_steps),
+            "v2/missing_comparisons": float(missing_comparisons),
+            "v2/comparison_lines_total": float(comparison_lines_total),
+            "v2/comparison_lines_invalid": float(comparison_lines_invalid),
+            "v2/self_comparisons_dropped": float(self_comparisons_dropped),
+            "v2/comparison_pairs_tie": float(comparison_pairs_tie),
+        }
+
+        return gen_rewards, judge_rewards, metrics

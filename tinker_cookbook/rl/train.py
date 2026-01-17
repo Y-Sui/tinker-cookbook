@@ -23,9 +23,12 @@ from tinker_cookbook.display import colorize_example
 from tinker_cookbook.eval.evaluators import SamplingClientEvaluator, SamplingClientEvaluatorBuilder
 from tinker_cookbook.rl.data_processing import (
     assemble_training_data,
+    assemble_training_data_dual_advantage,
     assemble_training_data_stepwise,
     compute_advantages,
     compute_stepwise_advantages,
+    has_dual_rewards,
+    normalize_rewards_separately,
     remove_constant_reward_groups,
 )
 from tinker_cookbook.rl.metric_util import RLTestSetEvaluator, compute_trajectory_metrics
@@ -333,6 +336,12 @@ class Config:
     # When True, computes per-step advantages instead of collapsing to trajectory-level.
     # This enables proper credit assignment where different steps have different rewards.
     use_stepwise_advantages: bool = False
+
+    # Dual advantage system (v2 rewards) for multi-agent debate
+    # When trajectories have gen_rewards/judge_rewards from the v2 reward system,
+    # these weights control the relative importance of generator vs judge learning.
+    lambda_gen: float = 1.0  # Weight for generator loss (<solution>/<evaluation> tokens)
+    lambda_judge: float = 1.0  # Weight for judge loss (<comparison> tokens)
 
 
 @scope
@@ -807,6 +816,8 @@ async def prepare_minibatch(
     kl_penalty_coef: float,
     kl_discount_factor: float,
     use_stepwise_advantages: bool = False,
+    lambda_gen: float = 1.0,
+    lambda_judge: float = 1.0,
 ) -> tuple[list[tinker.Datum], dict[str, Any]]:
     """Converts the trajectories into a minibatch, and provides metrics about the minibatch.
 
@@ -814,6 +825,8 @@ async def prepare_minibatch(
         use_stepwise_advantages: If True, compute per-step advantages instead of
             trajectory-level advantages. This enables proper credit assignment in
             multi-step environments where different steps have different rewards.
+        lambda_gen: Weight for generator loss in v2 dual advantage system.
+        lambda_judge: Weight for judge loss in v2 dual advantage system.
     """
 
     # Compute trajectory metrics
@@ -827,7 +840,21 @@ async def prepare_minibatch(
 
     # Assemble training data
     with timed("assemble_training_data", metrics):
-        if use_stepwise_advantages:
+        # Check if trajectories have v2 dual rewards (gen_rewards + judge_rewards)
+        if has_dual_rewards(trajectory_groups_P):
+            # V2 reward system: separate normalization for gen and judge advantages
+            gen_advantages_P_G_S, judge_advantages_P_G_S = normalize_rewards_separately(
+                trajectory_groups_P
+            )
+            data_D, _metadata_D = assemble_training_data_dual_advantage(
+                trajectory_groups_P,
+                gen_advantages_P_G_S,
+                judge_advantages_P_G_S,
+                lambda_gen=lambda_gen,
+                lambda_judge=lambda_judge,
+            )
+            metrics["v2/using_dual_advantages"] = 1.0
+        elif use_stepwise_advantages:
             # Per-step advantages for multi-step environments (e.g., multi-agent debate)
             advantages_P_G_S = compute_stepwise_advantages(trajectory_groups_P)
             data_D, _metadata_D = assemble_training_data_stepwise(
@@ -962,6 +989,8 @@ async def do_train_step_streaming_and_get_sampling_client(
                 kl_penalty_coef=cfg.kl_penalty_coef,
                 kl_discount_factor=cfg.kl_discount_factor,
                 use_stepwise_advantages=cfg.use_stepwise_advantages,
+                lambda_gen=cfg.lambda_gen,
+                lambda_judge=cfg.lambda_judge,
             )
             metrics.update(prepare_minibatch_metrics)
 
@@ -1041,6 +1070,8 @@ async def do_train_step_and_get_sampling_client(
         kl_penalty_coef=cfg.kl_penalty_coef,
         kl_discount_factor=cfg.kl_discount_factor,
         use_stepwise_advantages=cfg.use_stepwise_advantages,
+        lambda_gen=cfg.lambda_gen,
+        lambda_judge=cfg.lambda_judge,
     )
     metrics.update(prepare_minibatch_metrics)
 

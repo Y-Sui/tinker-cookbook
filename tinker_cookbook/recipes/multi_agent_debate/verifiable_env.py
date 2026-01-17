@@ -131,6 +131,14 @@ class VerifiableMultiAgentDebateEnv(BaseMultiAgentDebateEnv):
         )
 
     def _format_turns(self, turns: list[ParsedResponse], start_offset: int = 0) -> str:
+        """Format history with blind review (comparisons are hidden).
+
+        Blind review ensures agents form independent judgments by hiding
+        previous <comparison> tags. This prevents bandwagon effects and
+        produces more meaningful consensus for reward computation.
+
+        Only <solution> and <evaluation> are shown in history.
+        """
         if not turns:
             return ""
         lines: list[str] = ["--- HISTORY OF PREVIOUS TURNS ---"]
@@ -143,9 +151,8 @@ class VerifiableMultiAgentDebateEnv(BaseMultiAgentDebateEnv):
             lines.append(response.solution.rstrip())
             lines.append(f"{agent_label}'s Evaluation:")
             lines.append(response.evaluation.rstrip())
-            if response.comparison_text:
-                lines.append(f"{agent_label}'s Comparison:")
-                lines.append(response.comparison_text.rstrip())
+            # BLIND REVIEW: Comparisons are intentionally hidden from history
+            # so that each agent forms independent judgments
             lines.append("")
         lines.append("--- END OF HISTORY ---\n")
         return "\n".join(lines).rstrip()
@@ -153,7 +160,7 @@ class VerifiableMultiAgentDebateEnv(BaseMultiAgentDebateEnv):
     async def get_conversation_context(self) -> str:
         """Format the conversation context for this agent.
 
-        Shows recent history_turns. If summarize_history is True, summarizes them.
+        Shows the last round. If summarize_history is True, summarizes it.
         Otherwise, keeps them verbatim.
         """
         if not self.coordinator.state.agent_responses:
@@ -161,23 +168,13 @@ class VerifiableMultiAgentDebateEnv(BaseMultiAgentDebateEnv):
 
         question = self.coordinator.state.question
         turns = list(self.coordinator.state.agent_responses)
+        num_agents = self.coordinator.state.num_agents
+        history_turns = num_agents
 
         # Get recent turns based on history_turns setting
-        if self.history_turns < 0:
-            # Show all turns
-            recent_turns = turns
-            start_offset = 0
-        elif self.history_turns == 0:
-            # Show no turns
-            recent_turns = []
-            start_offset = 0
-        else:
-            # Show last N turns
-            total_turns = len(turns)
-            start_offset = max(0, total_turns - self.history_turns)
-            recent_turns = (
-                turns[-self.history_turns :] if len(turns) > self.history_turns else turns
-            )
+        total_turns = len(turns)
+        start_offset = max(0, total_turns - history_turns)
+        recent_turns = turns[-history_turns:] if len(turns) > history_turns else turns
 
         history_text = (
             f"Query: {question}\n{self._format_turns(recent_turns, start_offset)}".rstrip()
@@ -187,24 +184,41 @@ class VerifiableMultiAgentDebateEnv(BaseMultiAgentDebateEnv):
 
     async def get_observation_string(self) -> str:
         history = await self.get_conversation_context()
-        turn_idx = self.coordinator.state.current_turn
-        agent_id = self.coordinator.state.current_agent_id
+        current_cycle = self.coordinator.state.get_current_cycle()
 
-        # First turn prompt
-        if turn_idx == 0:
+        # With parallel generation, count OTHER agents from committed responses only.
+        # In cycle N, all agents see responses from cycles 0..N-1.
+        # All other (num_agents - 1) agents have responded in previous cycles if cycle > 0.
+        num_agents = self.coordinator.state.num_agents
+        num_other_agents = num_agents - 1 if current_cycle > 0 else 0
+
+        # Build guidance for evaluation and comparison based on what's available
+        if num_other_agents == 0:
+            eval_guidance = 'Set <evaluation> to "N/A" (no other agents have responded yet).'
+            comp_guidance = 'Set <comparison> to "N/A" (no other agents to compare).'
+        elif num_other_agents == 1:
+            eval_guidance = "Evaluate the other agent's solution and reasoning."
+            comp_guidance = 'Set <comparison> to "N/A" (need at least 2 other agents to compare).'
+        else:
+            eval_guidance = "Evaluate each other agent's solution and reasoning."
+            comp_guidance = (
+                f"Compare pairs of other agents (do not include yourself, Agent {self.agent_id})."
+            )
+
+        # First cycle prompt (no history available)
+        if current_cycle == 0:
             return (
                 f"Query: {self.coordinator.state.question}\n"
-                f"Agent {agent_id}, please proceed with your response.\n\n"
-                'Set <evaluation> to "N/A" and <comparison> to "N/A" as this is the first turn.\n'
+                f"Agent {self.agent_id}, please proceed with your response.\n\n"
+                f"{eval_guidance}\n{comp_guidance}\n"
                 "Your <solution> must include your final answer in \\boxed{{...}} format."
             )
 
-        # Regular turn prompt
+        # Regular turn prompt (with history from previous cycles)
         return (
-            f"{history}\n\nAgent {agent_id}, it is your turn.\n"
-            "Please provide your solution, evaluation, and comparison. "
-            "Your <solution> must include your final answer in \\boxed{{...}} format. "
-            f"Do not include Agent {agent_id} in your comparisons."
+            f"{history}\n\nAgent {self.agent_id}, it is your turn.\n"
+            f"{eval_guidance}\n{comp_guidance}\n"
+            "Your <solution> must include your final answer in \\boxed{{...}} format."
         )
 
 
@@ -230,7 +244,6 @@ class VerifiableMultiAgentEnvGroupBuilder(BaseMultiAgentEnvGroupBuilder):
     problem_index: int
     max_rounds: int
     self_play: bool
-    history_turns: int = 2
     log_full_transcript: bool = False
     grader: Literal["sympy", "math_verify"] = "sympy"
     grade_timeout: float = 1.0
@@ -264,7 +277,6 @@ class VerifiableMultiAgentEnvGroupBuilder(BaseMultiAgentEnvGroupBuilder):
                 coordinator=coordinator,
                 renderer=self.renderer,
                 self_play=True,
-                history_turns=self.history_turns,
                 summarize_history=self.summarize_history,
                 _summarizer_policy=shared_summarizer,
                 model_name=self.model_name,
@@ -299,16 +311,51 @@ class VerifiableMultiAgentEnvGroupBuilder(BaseMultiAgentEnvGroupBuilder):
         env_group: Sequence[Env],
         problem: VerifiableMathProblem,
     ) -> list[tuple[float, Metrics]]:
-        """Compute rewards and metrics for training mode."""
+        """Compute rewards and metrics for training mode.
+
+        Uses v2 reward system:
+        - gen_rewards: Soft vote ratio for <solution>/<evaluation> tokens
+        - judge_rewards: Consensus alignment for <comparison> tokens
+
+        These are stored in trajectory_group[agent_id].gen_rewards and
+        trajectory_group[agent_id].judge_rewards for later processing.
+        """
         env0 = env_group[0]
         assert isinstance(env0, VerifiableMultiAgentDebateEnv)
         coordinator = env0.coordinator
 
-        if self.log_full_transcript:
-            log_debate_transcript(coordinator)
+        # Use v2 reward system (soft vote ratio + consensus alignment)
+        gen_rewards, judge_rewards, v2_metrics = self._compute_rewards_v2(
+            trajectory_group, env_group
+        )
 
-        # Populate step-wise rewards in trajectories
-        stepwise_metrics = self._populate_stepwise_rewards(trajectory_group, env_group)
+        # Store rewards in trajectory group for later data assembly
+        # We attach these as attributes so the training loop can access them
+        # Use object.__setattr__ to bypass frozen dataclass restriction
+        for agent_id in range(self.num_agents):
+            object.__setattr__(
+                trajectory_group[agent_id], "gen_rewards", gen_rewards.get(agent_id, [])
+            )
+            object.__setattr__(
+                trajectory_group[agent_id], "judge_rewards", judge_rewards.get(agent_id, [])
+            )
+
+        # Compute reward statistics for metrics logging
+        import numpy as np
+
+        all_gen_rewards = [
+            r for agent_id in range(self.num_agents) for r in gen_rewards.get(agent_id, [])
+        ]
+        all_judge_rewards = [
+            r for agent_id in range(self.num_agents) for r in judge_rewards.get(agent_id, [])
+        ]
+
+        if all_gen_rewards:
+            v2_metrics["reward/gen/mean"] = float(np.mean(all_gen_rewards))
+            v2_metrics["reward/gen/std"] = float(np.std(all_gen_rewards))
+        if all_judge_rewards:
+            v2_metrics["reward/judge/mean"] = float(np.mean(all_judge_rewards))
+            v2_metrics["reward/judge/std"] = float(np.std(all_judge_rewards))
 
         # Compute accuracy metrics for monitoring (NOT used as rewards)
         dataset_name = problem.dataset_name
@@ -360,12 +407,22 @@ class VerifiableMultiAgentEnvGroupBuilder(BaseMultiAgentEnvGroupBuilder):
         num_correct = sum(1 for m in accuracy_metrics if m["train_correct"] > 0.5)
         consensus_correct = num_correct > len(accuracy_metrics) / 2  # More than half correct
 
+        if self.log_full_transcript:
+            per_agent_metrics = [
+                {
+                    "train_format": accuracy_metrics[agent_id]["train_format"],
+                    "train_correct": accuracy_metrics[agent_id]["train_correct"],
+                }
+                for agent_id in range(self.num_agents)
+            ]
+            log_debate_transcript(coordinator, metrics_by_agent=per_agent_metrics)
+
         # Return metrics for each agent
         return [
             (
                 0.0,  # No final reward (all rewards are already in trajectory steps)
                 {
-                    **stepwise_metrics,
+                    **v2_metrics,  # v2 reward system metrics
                     f"train_{dataset_name}/format": accuracy_metrics[agent_id]["train_format"],
                     f"train_{dataset_name}/correct": accuracy_metrics[agent_id]["train_correct"],
                     f"train_{dataset_name}/pass@{self.num_agents}": 1.0 if any_correct else 0.0,
@@ -414,9 +471,6 @@ class VerifiableMultiAgentEnvGroupBuilder(BaseMultiAgentEnvGroupBuilder):
         assert isinstance(env0, VerifiableMultiAgentDebateEnv)
         coordinator = env0.coordinator
 
-        if self.log_full_transcript:
-            log_debate_transcript(coordinator)
-
         results: list[tuple[float, Metrics]] = []
         agent_solutions_for_logging: list[tuple[int, str | None, str, dict[str, float]]] = []
 
@@ -443,6 +497,8 @@ class VerifiableMultiAgentEnvGroupBuilder(BaseMultiAgentEnvGroupBuilder):
             results.append((0.0, metrics))
 
         if self.log_full_transcript:
+            per_agent_metrics = [metrics for _, metrics in results]
+            log_debate_transcript(coordinator, metrics_by_agent=per_agent_metrics)
             log_debate_evaluation_final_solutions(agent_solutions_for_logging)
 
         return results
@@ -476,7 +532,6 @@ class VerifiableMathDebateDataset(RLDataset):
         num_agents: int,
         renderer: Renderer,
         self_play: bool,
-        history_turns: int,
         summarize_history: bool,
         summarize_model: str | None,
         log_full_transcript: bool,
@@ -494,7 +549,6 @@ class VerifiableMathDebateDataset(RLDataset):
         self.num_agents = num_agents
         self.renderer = renderer
         self.self_play = self_play
-        self.history_turns = history_turns
         self.summarize_history = summarize_history
         self.summarize_model = summarize_model
         self.log_full_transcript = log_full_transcript
@@ -518,7 +572,6 @@ class VerifiableMathDebateDataset(RLDataset):
                 renderer=self.renderer,
                 num_agents=self.num_agents,
                 self_play=self.self_play,
-                history_turns=self.history_turns,
                 summarize_history=self.summarize_history,
                 summarize_model=self.summarize_model,
                 log_full_transcript=self.log_full_transcript,
@@ -539,24 +592,29 @@ class VerifiableMathDebateDataset(RLDataset):
 
 @chz.chz
 class VerifiableMathDebateDatasetBuilder(RLDatasetBuilder):
+    """Builder for verifiable math debate datasets."""
+
+    # Required fields (no defaults) must come first
     batch_size: int
     num_train_datapoints: int
+    model_name: str
+    renderer_name: str
+    dataset_path: str
+    problem_field: str
+    answer_field: str
+
+    # Optional fields (with defaults)
     epoch: int = 1
     num_agents: int = 3
     max_rounds: int = 3
-    history_rounds: int = 2
     summarize_history: bool = False
     summarize_model: str | None = None
     log_full_transcript: bool = False
-    model_name: str
-    renderer_name: str
-    dataset_path: str = "tinker_cookbook/example_data/verifiable_math_problems.jsonl"
-    problem_field: str = "problem"
-    answer_field: str = "answer"
-    max_questions: int = -1  # No limit by default
     grader: Literal["sympy", "math_verify"] = "sympy"
+    max_questions: int = -1  # No limit by default
     grade_timeout: float = 2.0  # Increased timeout for safety
     enable_format_penalty: bool = True
+    enable_sequence_extension: bool = True  # Preserve thinking in history for O(T) compute
 
     async def __call__(
         self,
@@ -568,7 +626,15 @@ class VerifiableMathDebateDatasetBuilder(RLDatasetBuilder):
         num_train_datapoints * epoch. For online test-time learning, evaluation is
         handled separately by a custom evaluator that uses the same problem set.
         """
-        renderer = get_renderer(self.renderer_name, get_tokenizer(self.model_name))
+        # Create renderer with sequence extension if requested
+        tokenizer = get_tokenizer(self.model_name)
+        if self.enable_sequence_extension and self.renderer_name == "qwen3_disable_thinking":
+            # Enable sequence extension by preserving thinking in history
+            from tinker_cookbook.renderers.qwen3 import Qwen3DisableThinkingRenderer
+
+            renderer = Qwen3DisableThinkingRenderer(tokenizer, strip_thinking_from_history=False)
+        else:
+            renderer = get_renderer(self.renderer_name, tokenizer)
 
         # Load ALL problems from dataset (no train/test split for online TTL)
         all_problems = load_math_problems_from_jsonl(
@@ -589,7 +655,6 @@ class VerifiableMathDebateDatasetBuilder(RLDatasetBuilder):
             num_agents=self.num_agents,
             renderer=renderer,
             self_play=True,
-            history_turns=self.history_rounds,
             summarize_history=self.summarize_history,
             summarize_model=self.summarize_model,
             log_full_transcript=self.log_full_transcript,

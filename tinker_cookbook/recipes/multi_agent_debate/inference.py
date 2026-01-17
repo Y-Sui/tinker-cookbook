@@ -24,7 +24,6 @@ Run (module form):
     policy_model=\"openai/gpt-4o-mini\" \\
     num_agents=3 \\
     max_rounds=3 \\
-    history_rounds=2 \\
     max_questions=1
 """
 
@@ -130,7 +129,6 @@ class SelfPlayConfig:
     # Debate config
     num_agents: int = 3
     max_rounds: int = 3
-    history_rounds: int = 2
 
     # Optional summarization of history (also via OpenRouter)
     summarize_history: bool = False
@@ -197,7 +195,8 @@ def _format_transcript(
     """Format the full conversation transcript (including raw + parsed fields)."""
     lines: list[str] = []
     lines.append(f"Question: {coordinator.state.question}")
-    lines.append(f"num_agents={num_agents} max_turns={coordinator.state.max_turns} env={env_kind}")
+    max_turns = coordinator.state.max_cycles * num_agents
+    lines.append(f"num_agents={num_agents} max_turns={max_turns} env={env_kind}")
     lines.append("")
     for turn_idx, resp in enumerate(coordinator.state.agent_responses, start=1):
         lines.append(f"== Turn {turn_idx} (Agent {resp.author_id}) ==")
@@ -226,7 +225,6 @@ async def _run_one_debate(
     question: str,
     num_agents: int,
     max_rounds: int,
-    history_rounds: int,
     policy: PolicyFn,
     summarize_history: bool,
     summarizer: OpenRouterMessageCompleter | None,
@@ -249,7 +247,6 @@ async def _run_one_debate(
                     coordinator=coordinator,
                     renderer=None,  # not used here (OpenRouter chat messages)
                     self_play=True,
-                    history_turns=history_rounds,
                     summarize_history=summarize_history,
                     _summarizer_policy=summarizer,
                     model_name=None,
@@ -262,7 +259,6 @@ async def _run_one_debate(
                     coordinator=coordinator,
                     renderer=None,  # not used here (OpenRouter chat messages)
                     self_play=True,
-                    history_turns=history_rounds,
                     summarize_history=summarize_history,
                     _summarizer_policy=summarizer,
                     model_name=None,
@@ -274,7 +270,8 @@ async def _run_one_debate(
     async def run_agent(agent_id: int) -> None:
         env = env_group[agent_id]
         while True:
-            await coordinator.wait_for_turn(agent_id)
+            # Wait for cycle to start (all agents proceed in parallel within a cycle)
+            await coordinator.wait_for_cycle_start(agent_id)
             if coordinator.done:
                 return
 
@@ -282,9 +279,9 @@ async def _run_one_debate(
             observation = await env.get_observation_string()  # type: ignore[attr-defined]
 
             if stream_turn_context:
-                turn_num = coordinator.state.current_turn + 1
+                cycle_num = coordinator.state.current_cycle + 1
                 print("-" * 80, flush=True)
-                print(f"Turn {turn_num} (Agent {agent_id}) observation/context:", flush=True)
+                print(f"Cycle {cycle_num} (Agent {agent_id}) observation/context:", flush=True)
                 print(observation.rstrip(), flush=True)
                 print("-" * 80, flush=True)
 
@@ -295,6 +292,7 @@ async def _run_one_debate(
             resp = await policy(messages)
             resp_text = get_text_content(resp)
 
+            # Submit response - waits for all agents to complete the cycle
             parsed = await coordinator.submit_response(agent_id, resp_text, observation=observation)
             trajectories[agent_id].transitions.append(_Transition(reward=0.0))
 
@@ -373,7 +371,6 @@ async def main_async() -> None:
             question=question,
             num_agents=cfg.num_agents,
             max_rounds=cfg.max_rounds,
-            history_rounds=cfg.history_rounds,
             policy=policy,
             summarize_history=cfg.summarize_history,
             summarizer=summarizer,

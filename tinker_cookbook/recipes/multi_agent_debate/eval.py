@@ -30,7 +30,6 @@ class EvalConfig:
     # ============================================================================
     num_agents: int = 3  # Number of agents in debate
     max_rounds: int = 3  # Maximum debate rounds
-    history_rounds: int = 2  # Recent turns in context (-1 = entire history)
 
     # ============================================================================
     # Dataset Configuration
@@ -90,7 +89,6 @@ async def main_async():
         renderer=renderer,
         num_agents=config.num_agents,
         max_rounds=config.max_rounds,
-        history_rounds=config.history_rounds,
         summarize_history=config.summarize_history,
         summarize_model=config.summarize_model,
         log_full_transcript=config.log_full_transcript,

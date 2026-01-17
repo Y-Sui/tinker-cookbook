@@ -2,11 +2,11 @@
 
 ## Plain-language summary
 
-A single language model is trained (or evaluated) in self-play by having it impersonate multiple “agents” who debate the same question over several rounds. Agents take turns. On each turn an agent must produce three parts: (1) a proposed solution, (2) a critique/meta-critique of the discussion, and (3) pairwise comparisons that rank other agents (e.g., “Agent 0 > Agent 2”).
+A single language model is trained (or evaluated) in self-play by having it personate multiple “agents” who debate the same question over several rounds. Agents take turns. On each turn an agent must produce three parts: (1) a proposed solution, (2) a critique/meta-critique of the discussion, and (3) pairwise comparisons that rank other agents (e.g., “Agent 0 > Agent 2”).
 
-The core learning signal comes from these peer comparisons rather than from task correctness. Every time an agent states a comparison “A > B”, the system treats it as a win for A and a loss for B. Across the whole debate, each agent accumulates positive and negative comparison points based on how often they are ranked above or below others. Optionally, agents are also penalized when they fail to provide any valid comparisons on turns where comparisons are expected (with early turns exempt to allow “warm-up”).
+The core learning signal comes from these peer comparisons rather than from task correctness. Every time an agent states a comparison “A > B”, the system treats it as a win for A and a loss for B. Across the whole debate, each agent accumulates positive and negative comparison points based on how often they are ranked above or below others. Optionally, agents are also penalized when they fail to provide any valid comparisons on turns where comparisons are expected (with early turns exempt to allow “warm-up”). The idea here is that the judge comparison is based on both generation, and evaluation, if the agent's evaluation has some issues, they might also been judged as bad completion. By doing this, we also judge the judge capabilities.
 
-Rewards are not given immediately while the agents are generating text. Instead, the full transcript is collected first, then rewards are computed afterward from all comparisons and penalties. The total reward per agent is normalized so that debates with many comparisons don’t automatically dominate training compared to debates with few comparisons. That normalized per-agent reward is then distributed over that agent’s multiple turns: either spread across all of their turns using exponentially decayed weights (more weight on later turns), or assigned entirely to the final turn (legacy behavior).
+Rewards are not given immediately while the agents are generating text. Instead, the full transcript is collected first, then rewards are computed afterward from all comparisons and penalties. The rewards are distributed to the corresponding steps been compared. For example, if agent 2's pairwise comparison shows that agent 0's completion is better than agent 1's completion. Then agent 0's completion will be rewarded.
 
 For optimization, each agent’s total return is converted into an advantage by subtracting the average return within the same debate group (so training focuses on relative performance between agents on the same prompt). That advantage is applied to the tokens the agent generated, yielding a token-level policy-gradient style update with an importance-sampling correction between the policy that generated the data and the current policy.
 
@@ -15,6 +15,9 @@ There are two variants. In the non-verifiable version, the only training signal 
 This note documents the *current* behavior (including non-obvious edge cases) of the multi-agent debate recipe as implemented under `tinker_cookbook/recipes/multi_agent_debate/`.
 
 It is written to be copy/paste-able as “implementation details / methods” for a paper, but it intentionally stays faithful to the code, not an idealized design.
+
+
+We formulate multi-agent debate as a self-play game where the unified policy π simultaneously generates N debate positions {s₁, s₂, ..., sₙ} and N² pairwise preference judgments {p_ij} for all pairs of positions. The reward signal for position i is derived from the aggregated peer evaluations: r_i = Σⱼ I(p_ji = 'prefer i') - Σⱼ I(p_ij = 'prefer j')
 
 ## What This Recipe Is (High-Level Scope)
 
