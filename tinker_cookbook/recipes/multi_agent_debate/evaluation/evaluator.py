@@ -11,7 +11,7 @@ from tinker_cookbook.eval.evaluators import SamplingClientEvaluator
 from tinker_cookbook.rl.rollouts import do_group_rollout
 from tinker_cookbook.utils import logtree
 
-from .verifiable_env import VerifiableMathProblem, VerifiableMultiAgentEnvGroupBuilder
+from ..environments.verifiable import VerifiableMathProblem, VerifiableMultiAgentEnvGroupBuilder
 
 
 class MultiAgentDebateEvaluator(SamplingClientEvaluator):

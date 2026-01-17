@@ -5,7 +5,7 @@ Supports both verifiable (math) and non-verifiable (open-ended) tasks.
 
 Quick Start:
     Training (verifiable math):
-        python -m tinker_cookbook.recipes.multi_agent_debate.train \\
+        python -m tinker_cookbook.recipes.multi_agent_debate.scripts.train \\
             env="verifiable" \\
             dataset_path="tinker_cookbook/data/aime2024_sample.jsonl" \\
             num_agents=3 \\
@@ -13,7 +13,7 @@ Quick Start:
             batch_size=16
 
     Evaluation only:
-        python -m tinker_cookbook.recipes.multi_agent_debate.eval \\
+        python -m tinker_cookbook.recipes.multi_agent_debate.scripts.eval \\
             checkpoint_path="tinker://..." \\
             dataset_path="tinker_cookbook/data/aime2024_sample.jsonl" \\
             num_agents=3
@@ -37,12 +37,12 @@ Key Features:
 """
 
 # Core components
-from .coordinator import MultiAgentCoordinator
-from .prompts import (
+from .core import (
     AGENT_PERSONAS,
     AGENT_SYSTEM_PROMPT,
     SUMMARIZER_SYSTEM_PROMPT,
     VERIFIABLE_AGENT_SYSTEM_PROMPT,
+    MultiAgentCoordinator,
     ParsedResponse,
     format_persona_intro,
     get_agent_persona,
@@ -51,7 +51,7 @@ from .prompts import (
 )
 
 # Environments - Non-verifiable
-from .env import (
+from .environments import (
     MultiAgentDebateDataset,
     MultiAgentDebateDatasetBuilder,
     MultiAgentDebateEnv,
@@ -59,7 +59,7 @@ from .env import (
 )
 
 # Environments - Verifiable (Math)
-from .verifiable_env import (
+from .environments import (
     DirectMathEvaluationEnv,
     VerifiableMathDebateDataset,
     VerifiableMathDebateDatasetBuilder,
@@ -69,10 +69,10 @@ from .verifiable_env import (
 )
 
 # Evaluation
-from .evaluator import MultiAgentDebateEvaluator
+from .evaluation import MultiAgentDebateEvaluator
 
 # Data loading
-from .loaders import load_math_problems_from_jsonl, load_questions_from_jsonl
+from .data import load_math_problems_from_jsonl, load_questions_from_jsonl
 
 # Utilities
 from .utils import (

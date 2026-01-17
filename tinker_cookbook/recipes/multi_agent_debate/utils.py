@@ -5,9 +5,9 @@ from tinker_cookbook.renderers import Renderer
 from tinker_cookbook.utils import logtree
 
 if TYPE_CHECKING:
-    from tinker_cookbook.recipes.multi_agent_debate.env import MultiAgentCoordinator
+    from tinker_cookbook.recipes.multi_agent_debate.core.coordinator import MultiAgentCoordinator
 
-from .prompts import AGENT_SYSTEM_PROMPT, format_persona_intro
+from .core.prompts import AGENT_SYSTEM_PROMPT, format_persona_intro
 
 # Stop when we see the closing tag of the last required field
 STOP_CONDITION = ["</comparison>"]

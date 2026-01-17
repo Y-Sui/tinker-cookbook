@@ -17,11 +17,11 @@ from tinker_cookbook.rl.types import (
 )
 from tinker_cookbook.tokenizer_utils import get_tokenizer
 
-from .base_env import BaseMultiAgentDebateEnv, BaseMultiAgentEnvGroupBuilder
-from .coordinator import MultiAgentCoordinator
-from .loaders import load_questions_from_jsonl
-from .prompts import AGENT_SYSTEM_PROMPT, ParsedResponse, format_persona_intro
-from .utils import get_debate_stop_condition, log_debate_transcript
+from .base import BaseMultiAgentDebateEnv, BaseMultiAgentEnvGroupBuilder
+from ..core.coordinator import MultiAgentCoordinator
+from ..data.loaders import load_questions_from_jsonl
+from ..core.prompts import AGENT_SYSTEM_PROMPT, ParsedResponse, format_persona_intro
+from ..utils import get_debate_stop_condition, log_debate_transcript
 
 
 @dataclass

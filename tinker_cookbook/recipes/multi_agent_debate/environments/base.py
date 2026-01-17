@@ -30,9 +30,9 @@ from tinker_cookbook.rl.types import (
     Trajectory,
 )
 
-from .coordinator import MultiAgentCoordinator
-from .prompts import SUMMARIZER_SYSTEM_PROMPT
-from .utils import STOP_CONDITION, get_step_idx_before_turn
+from ..core.coordinator import MultiAgentCoordinator
+from ..core.prompts import SUMMARIZER_SYSTEM_PROMPT
+from ..utils import STOP_CONDITION, get_step_idx_before_turn
 
 # Reward system constants
 FORMAT_PENALTY = -0.5  # Penalty for missing/invalid comparisons

@@ -27,7 +27,7 @@ Multi-agent debate with pairwise comparison rewards for reinforcement learning. 
 Train on math problems with ground-truth verification:
 
 ```bash
-python -m tinker_cookbook.recipes.multi_agent_debate.train \
+python -m tinker_cookbook.recipes.multi_agent_debate.scripts.train \
     env="verifiable" \
     dataset_path="tinker_cookbook/data/aime2024_sample.jsonl" \
     problem_field="problem" \
@@ -57,7 +57,7 @@ python -m tinker_cookbook.recipes.multi_agent_debate.train \
 Evaluate a trained checkpoint without training:
 
 ```bash
-python -m tinker_cookbook.recipes.multi_agent_debate.eval \
+python -m tinker_cookbook.recipes.multi_agent_debate.scripts.eval \
     checkpoint_path="tinker://workspace-id/path/to/checkpoint" \
     dataset_path="tinker_cookbook/data/aime2024_sample.jsonl" \
     problem_field="problem" \
@@ -73,7 +73,7 @@ Test debate dynamics without training using OpenRouter models:
 
 ```bash
 export OPENROUTER_API_KEY=sk-or-...
-python -m tinker_cookbook.recipes.multi_agent_debate.inference \
+python -m tinker_cookbook.recipes.multi_agent_debate.scripts.openrouter_selfplay \
     env="verifiable" \
     policy_model="openai/gpt-4o-mini" \
     dataset_path="tinker_cookbook/data/aime2024_sample.jsonl" \
@@ -252,20 +252,27 @@ multi_agent_debate/
 ├── __init__.py                    # Public API exports
 ├── README.md                      # This file
 ├── POLISH_RECOMMENDATIONS.md      # Code organization recommendations
-│
-├── train.py                       # Main training script
-├── eval.py                        # Evaluation-only script
-├── inference.py                   # OpenRouter self-play (no training)
-│
-├── coordinator.py                 # Turn-taking coordination
-├── prompts.py                     # Prompts and response parsing
 ├── utils.py                       # Logging and utilities
-├── loaders.py                     # Data loading
 │
-├── base_env.py                    # Base classes for environments
-├── env.py                         # Non-verifiable debate environment
-├── verifiable_env.py              # Verifiable math debate environment
-├── evaluator.py                   # Custom dual-mode evaluator
+├── core/                          # Core debate logic
+│   ├── coordinator.py             # Turn-taking coordination
+│   └── prompts.py                 # Prompts and response parsing
+│
+├── environments/                  # Environment implementations
+│   ├── base.py                    # Base classes
+│   ├── debate.py                  # Non-verifiable debate
+│   └── verifiable.py              # Verifiable math debate
+│
+├── evaluation/                    # Evaluation components
+│   └── evaluator.py               # Custom dual-mode evaluator
+│
+├── data/                          # Data loading
+│   └── loaders.py                 # JSONL data loaders
+│
+├── scripts/                       # Runnable scripts
+│   ├── train.py                   # Main training script
+│   ├── eval.py                    # Evaluation-only script
+│   └── openrouter_selfplay.py     # OpenRouter self-play (no training)
 │
 └── doc/                           # Algorithm documentation
     ├── algorithm_flowchart.md     # Visual protocol overview

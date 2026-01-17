@@ -7,8 +7,12 @@ import chz
 import tinker
 from dotenv import load_dotenv
 
-from tinker_cookbook.recipes.multi_agent_debate.evaluator import MultiAgentDebateEvaluator
-from tinker_cookbook.recipes.multi_agent_debate.loaders import load_math_problems_from_jsonl
+from tinker_cookbook.recipes.multi_agent_debate.evaluation.evaluator import (
+    MultiAgentDebateEvaluator,
+)
+from tinker_cookbook.recipes.multi_agent_debate.data.loaders import (
+    load_math_problems_from_jsonl,
+)
 
 load_dotenv(override=True)
 

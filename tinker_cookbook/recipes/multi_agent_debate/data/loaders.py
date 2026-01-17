@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, TypeVar
 
 if TYPE_CHECKING:
-    from .verifiable_env import VerifiableMathProblem
+    from ..environments.verifiable import VerifiableMathProblem
 
 T = TypeVar("T")
 
@@ -65,7 +65,7 @@ def load_math_problems_from_jsonl(
         ValueError: If no problems are loaded or required fields are missing
     """
     # Import here to avoid circular dependency
-    from .verifiable_env import VerifiableMathProblem
+    from ..environments.verifiable import VerifiableMathProblem
 
     problems: list[VerifiableMathProblem] = []
     with open(path, "r", encoding="utf-8") as f:

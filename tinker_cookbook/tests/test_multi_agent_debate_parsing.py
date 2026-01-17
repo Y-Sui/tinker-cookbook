@@ -1,4 +1,4 @@
-from tinker_cookbook.recipes.multi_agent_debate.prompts import parse_agent_response
+from tinker_cookbook.recipes.multi_agent_debate.core.prompts import parse_agent_response
 
 
 def test_parse_agent_response_strips_think_and_preamble():

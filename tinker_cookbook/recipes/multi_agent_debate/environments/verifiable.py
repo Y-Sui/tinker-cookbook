@@ -39,11 +39,11 @@ from tinker_cookbook.rl.types import (
 )
 from tinker_cookbook.tokenizer_utils import get_tokenizer
 
-from .base_env import BaseMultiAgentDebateEnv, BaseMultiAgentEnvGroupBuilder
-from .coordinator import MultiAgentCoordinator
-from .loaders import load_math_problems_from_jsonl
-from .prompts import VERIFIABLE_AGENT_SYSTEM_PROMPT, ParsedResponse, format_persona_intro
-from .utils import (
+from .base import BaseMultiAgentDebateEnv, BaseMultiAgentEnvGroupBuilder
+from ..core.coordinator import MultiAgentCoordinator
+from ..data.loaders import load_math_problems_from_jsonl
+from ..core.prompts import VERIFIABLE_AGENT_SYSTEM_PROMPT, ParsedResponse, format_persona_intro
+from ..utils import (
     STOP_CONDITION,
     get_debate_stop_condition,
     log_debate_evaluation_final_solutions,

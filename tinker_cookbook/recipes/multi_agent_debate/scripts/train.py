@@ -20,9 +20,13 @@ import chz
 from dotenv import load_dotenv
 
 from tinker_cookbook import cli_utils, model_info
-from tinker_cookbook.recipes.multi_agent_debate.env import MultiAgentDebateDatasetBuilder
-from tinker_cookbook.recipes.multi_agent_debate.evaluator import MultiAgentDebateEvaluator
-from tinker_cookbook.recipes.multi_agent_debate.verifiable_env import (
+from tinker_cookbook.recipes.multi_agent_debate.environments.debate import (
+    MultiAgentDebateDatasetBuilder,
+)
+from tinker_cookbook.recipes.multi_agent_debate.evaluation.evaluator import (
+    MultiAgentDebateEvaluator,
+)
+from tinker_cookbook.recipes.multi_agent_debate.environments.verifiable import (
     VerifiableMathDebateDatasetBuilder,
 )
 from tinker_cookbook.rl import train

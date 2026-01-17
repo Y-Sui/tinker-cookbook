@@ -16,7 +16,7 @@ Differences from training:
 
 Run (module form):
   export OPENROUTER_API_KEY=...
-  python -m tinker_cookbook.recipes.multi_agent_debate.openrouter_selfplay \\
+  python -m tinker_cookbook.recipes.multi_agent_debate.scripts.openrouter_selfplay \\
     env=\"verifiable\" \\
     dataset_path=\"tinker_cookbook/data/aime2025_sample.jsonl\" \\
     problem_field=\"query\" \\
@@ -45,11 +45,11 @@ import chz
 from tinker_cookbook.completers import OpenRouterMessageCompleter
 from tinker_cookbook.renderers import Message, get_text_content
 
-from .coordinator import MultiAgentCoordinator
-from .env import MultiAgentDebateEnv
-from .loaders import load_math_problems_from_jsonl, load_questions_from_jsonl
-from .utils import STOP_CONDITION, get_step_idx_before_turn
-from .verifiable_env import VerifiableMathProblem, VerifiableMultiAgentDebateEnv
+from ..core.coordinator import MultiAgentCoordinator
+from ..environments.debate import MultiAgentDebateEnv
+from ..data.loaders import load_math_problems_from_jsonl, load_questions_from_jsonl
+from ..utils import STOP_CONDITION, get_step_idx_before_turn
+from ..environments.verifiable import VerifiableMathProblem, VerifiableMultiAgentDebateEnv
 
 PolicyFn = Callable[[list[Message]], Awaitable[Message]]
 
