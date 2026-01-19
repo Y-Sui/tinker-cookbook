@@ -139,7 +139,7 @@ You are Agent {agent_id}, a math problem solver in a multi-agent discussion.
 {persona_intro}
 
 INPUT CONTEXT:
-You will receive a User Query and a History of previous turns (if any). The User Query is a verifiable problem requiring a precise final answer. The History contains other agents' solutions and evaluations.
+You will receive a User Query and a History of previous turns (if any). The User Query is a verifiable problem requiring a precise final answer. Please use \\boxed{{answer}} for your response. The History contains other agents' solutions and evaluations from last round conversation.
 
 INSTRUCTIONS:
 You should structure your response into three sections: Solution, Evaluation, and Comparison. Follow the instructions for each section carefully.
@@ -150,17 +150,16 @@ You should structure your response into three sections: Solution, Evaluation, an
    - **CRITICAL**: You MUST end your solution with the final answer in LaTeX boxed format, e.g., \\boxed{{42}}.
 
 **2. Evaluate Peers**:
-   - Review the "History of previous turns".
+   - Review the "History of previous turns from last round", they contains the full logs of agents solutions and evaluation.
    - Check every line of other agents' solutions and evaluations (if any).
    - Critique each other agent on two fronts: 
     (1) their solution correctness, completeness, and reasoning quality, did they arrive at the right final answer? and adequately justify it?; and
-    (2) their evaluation quality, did they fairly and accurately assess others? did they spot errors or hallucinate?
+    (2) their evaluation quality, did they fairly and accurately assess others? did they spot errors or hallucinate? did they provide the aligned evaluation with the generated pairwise comparison?
 
 **3. Compare Peers**:
    - Perform pairwise comparisons of agents visible in history based on their solutions and evaluations.
    - Correctness is paramount. An agent with the correct final answer (derived correctly) > Agent with wrong answer.
-   - If both agents' solutions are correct, compare their reasoning depth, error analysis, and evaluation quality.
-   - Exclude yourself (Agent {agent_id}) from all comparisons.
+   - If both agents' solutions are correct, compare their reasoning depth, justification, and evaluation quality.
 
 OUTPUT FORMAT:
 
@@ -174,8 +173,8 @@ OUTPUT FORMAT:
 
 <comparison>
 [Rank pairs of other agents, e.g., "Agent 0 > Agent 1". Write "N/A" if fewer than 2 others.]
-[Use only > or < (you must pick a winner). Do not include yourself (Agent {agent_id}).]
-[No ties or equalities. Do NOT use "=", "≈", "tie", or prose explanations in <comparison>.]
+[Use only > or < (you must pick a winner)]
+[Also provide the justification for your comparison in <comparison>.]
 </comparison>
 """.strip()
 
@@ -222,9 +221,6 @@ def parse_agent_response(
         response = re.sub(r"\n```$", "", response)
         response = response.strip()
 
-    # Remove Qwen-style thinking blocks entirely, but keep them for logging/debugging.
-    # Important: sometimes the model mentions literal "<solution>" in its preamble/thoughts,
-    # and we must not treat those as the actual structured output.
     thinking_chunks = re.findall(r"<think>(.*?)</think>", response, flags=re.IGNORECASE | re.DOTALL)
     thinking = "\n\n".join(chunk.strip() for chunk in thinking_chunks if chunk.strip())
     response = re.sub(r"<think>.*?</think>", "", response, flags=re.IGNORECASE | re.DOTALL).strip()

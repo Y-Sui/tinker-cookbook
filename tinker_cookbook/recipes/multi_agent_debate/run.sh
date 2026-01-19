@@ -495,7 +495,7 @@ python -m tinker_cookbook.recipes.multi_agent_debate.train \
     enable_format_penalty=True \
     disable_eval=True
 
-python -m tinker_cookbook.recipes.multi_agent_debate.train \
+python -m tinker_cookbook.recipes.multi_agent_debate.scripts.train \
     model_name="Qwen/Qwen3-8B" \
     renderer_name="qwen3_disable_thinking" \
     max_tokens=8096 \
@@ -523,14 +523,14 @@ python -m tinker_cookbook.recipes.multi_agent_debate.train \
     disable_eval=True \
 
 
-python -m tinker_cookbook.recipes.multi_agent_debate.train \
+python -m tinker_cookbook.recipes.multi_agent_debate.scripts.train \
     model_name="Qwen/Qwen3-8B" \
     renderer_name="qwen3_disable_thinking" \
     max_tokens=8096 \
     env="verifiable" \
     num_agents=3 \
     max_rounds=3 \
-    batch_size=16 \
+    batch_size=64 \
     num_train_datapoints=-1 \
     epoch=6 \
     learning_rate=3e-5 \
@@ -546,5 +546,6 @@ python -m tinker_cookbook.recipes.multi_agent_debate.train \
     verifiable_answer_field="answer" \
     verifiable_grader="sympy" \
     wandb_project="CANT-01-17" \
-    wandb_name="Updated-Qwen3-8B-decay-format-penalty-disable-thinking-0112-math500" \
-    enable_format_penalty=True
+    wandb_name="Updated-Qwen3-8B-decay-format-penalty-disable-thinking-0117-math500" \
+    enable_format_penalty=True \
+    disable_eval=True \

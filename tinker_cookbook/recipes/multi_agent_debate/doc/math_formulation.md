@@ -259,203 +259,81 @@ Define normalization factors:
 \end{cases}
 \]
 
-For each agent \(i\), compute the **normalized total reward**:
-\[
-\hat{r}_i = \rho_i^\text{comp} \cdot \alpha_\text{comp} + \rho_i^\text{fmt} \cdot \alpha_\text{fmt}.
-\]
+### 5.3 Judge Reward (Consensus Alignment)
 
-#### Step 4: Distribute rewards to trajectory steps
+For each compared pair (normalized by agent+step), construct a majority
+consensus across all votes. Each judge comparison earns:
 
-Let agent \(i\)'s trajectory have \(R_i\) steps (transitions). If \(R_i = 0\), skip this agent.
+- +1 if it matches consensus
+- -1 if it disagrees
+- 0 if the pair is tied
 
-**If `enable_reward_decay=True`** (default):
+Judge rewards are averaged per author step.
 
-Compute exponential decay weights \(w_{i,s}\) for \(s \in \{0, 1, \dots, R_i-1\}\):
-\[
-w_{i,s} = \frac{\gamma^{R_i - 1 - s}}{\sum_{j=0}^{R_i-1} \gamma^{R_i - 1 - j}},
-\]
-where \(\gamma = \texttt{REWARD\_DECAY\_GAMMA}\) (0.7 by default).
+### 5.4 Format Penalties
 
-The normalized weight vector satisfies \(\sum_{s=0}^{R_i-1} w_{i,s} = 1\), with \(w_{i,0}\) (earliest step) receiving the most decay and \(w_{i,R_i-1}\) (latest step) receiving the least decay.
+If `enable_format_penalty=True`, missing comparisons on eligible turns add
+`FORMAT_PENALTY` to the judge reward. Turns 0-1 are exempt and penalties are
+skipped unless at least two other agents have acted.
 
-Assign step rewards:
-\[
-r_{i,s} \mathrel{+}= \hat{r}_i \cdot w_{i,s}.
-\]
+## 6. Advantage Computation and Training Data
 
-**If `enable_reward_decay=False`** (legacy mode):
-
-Assign all accumulated reward to the final step:
-\[
-r_{i,R_i-1} \mathrel{+}= \hat{r}_i.
-\]
-
-#### Step 5: Return summary metrics
-
-The reward shaper returns:
-
-- `stepwise_comparisons_used`: \(C_\text{valid}\), the number of valid comparison events processed.
-- `missing_comparisons`: \(M\), the number of turns (after exemption period) with no valid comparisons.
-
-### Comparison attribution: "Most recent action before the comparison"
-
-Each agent \(i\) has one transition per cycle. The reward shaper attributes each comparison to the compared agents' **most recent step strictly before** the current authored turn. This is used only to validate that both agents have acted (step 1 above checks `agent_a_step_idx >= 0` and `agent_b_step_idx >= 0`); the actual reward distribution happens in step 4.
-
-Concretely, the shaper computes:
-
-- `agent_a_step_idx = get_step_idx_before_turn(a, turn_idx=t, num_agents=N)`
-- `agent_b_step_idx = get_step_idx_before_turn(b, turn_idx=t, num_agents=N)`
-
-where `get_step_idx_before_turn` (in `utils.py`) implements:
-
-1) Find the most recent global turn index \(t' < t\) at which agent \(i\) acted.
-2) Convert that global turn index to a per-agent step index via:
-\[
-s = \left\lfloor \frac{t'}{N} \right\rfloor.
-\]
-
-If an agent has not acted before \(t\), the function returns \(-1\), and the comparison event is skipped.
-
-#### Worked example (3 agents, 2 cycles)
-
-Let \(N=3\). Global turns proceed in fixed order and "cycle" means one full pass over all agents:
-
-| Global turn \(t\) | Acting agent | Cycle \(c=\lfloor t/N \rfloor\) | That agent's step index |
-|---:|---:|---:|---:|
-| 0 | 0 | 0 | 0 |
-| 1 | 1 | 0 | 0 |
-| 2 | 2 | 0 | 0 |
-| 3 | 0 | 1 | 1 |
-| 4 | 1 | 1 | 1 |
-| 5 | 2 | 1 | 1 |
-
-Now suppose at **turn \(t=4\)** (Agent 1's response) the `<comparison>` text contains `Agent 0 > Agent 2`.
-
-Validation checks pass (both agents have acted), so:
-- Comparison accumulator: \(\rho_0^\text{comp} \mathrel{+}= 1\), \(\rho_2^\text{comp} \mathrel{-}= 1\).
-- \(C_\text{valid}\) increments by 1.
-
-Similarly, at **turn \(t=5\)** (Agent 2's response), if it writes `Agent 1 < Agent 0`:
-- Comparison accumulator: \(\rho_1^\text{comp} \mathrel{-}= 1\), \(\rho_0^\text{comp} \mathrel{+}= 1\).
-- \(C_\text{valid}\) increments by 1.
-
-After all turns, suppose \(C_\text{valid}=2\), \(T_\text{eligible}=4\), \(M=0\), and agent 0 has 2 steps. With `enable_reward_decay=True` and \(\gamma=0.7\):
+Rewards are normalized separately across the batch:
 
 \[
-\hat{r}_0 = 2 \cdot (1/2) = 1.0,
+A^{gen}_{i,s} = R^{gen}_{i,s} - \mu_{gen},\quad
+A^{judge}_{i,s} = R^{judge}_{i,s} - \mu_{judge}
 \]
+
+The combined step advantage is:
+
 \[
-w_{0,0} = \frac{0.7^1}{0.7 + 1.0} \approx 0.412, \quad w_{0,1} = \frac{1.0}{1.7} \approx 0.588,
-\]
-\[
-r_{0,0} = 1.0 \cdot 0.412 = 0.412, \quad r_{0,1} = 1.0 \cdot 0.588 = 0.588.
+A_{i,s} = \lambda_{gen} A^{gen}_{i,s} + \lambda_{judge} A^{judge}_{i,s}
 \]
 
-### Total return per agent
+All action tokens in step \(s\) receive the same \(A_{i,s}\) (no token-type
+parsing). Observations are masked out.
 
-Because final rewards are always `0.0`, each agent's total return for the debate is:
-\[
-R_i = \sum_{s=0}^{R_i-1} r_{i,s}.
-\]
+## 7. Optimization Objective
 
-If no valid comparisons occur and format penalties are disabled, all \(r_{i,s}=0\) and all returns are 0.
+Training uses Tinker loss functions (default: `importance_sampling`). The loss is
+policy-gradient style with importance correction between the sampler policy and
+current policy. KL diagnostics and entropy are logged, but the loss scalar is not
+logged by default.
 
-## RL Advantage Computation and Token-Level Objective (How Rewards Become Gradients)
+## 8. Verifiable Math Variant
 
-This section is implemented outside the recipe directory (generic RL code), but it is part of the end-to-end behavior.
+For math tasks, each `<solution>` must end with `\boxed{...}`. Rewards are still
+comparison-based; correctness is used only for metrics. Logged metrics include:
 
-### Advantage: centered within each debate group
+- `train_<dataset>/format`
+- `train_<dataset>/correct`
+- `train_<dataset>/pass@N`, `avg@N`, `cons@N`
 
-The RL pipeline computes advantages from total per-trajectory returns (step rewards + final reward) and centers them within each group:
-\[
-A_i = R_i - \frac{1}{N}\sum_{j=0}^{N-1} R_j.
-\]
+Evaluation supports debate mode (multi-turn) and direct mode (single-turn).
 
-This is `tinker_cookbook/rl/data_processing.py::compute_advantages(...)`.
+## 9. Summary of Logged Metrics
 
-If all agents receive identical returns (e.g., no comparisons), all advantages are 0 and that group contributes no policy gradient (the trainer may warn and keep a singleton group).
+Reward/quality:
 
-### Trajectory → token-level training data
+- `v2/total_votes`
+- `v2/votes_per_step`
+- `v2/missing_comparisons`
+- `v2/comparison_lines_invalid`
+- `v2/self_comparisons_dropped`
+- `reward/gen/mean`, `reward/judge/mean`
 
-`tinker_cookbook/rl/data_processing.py::trajectory_to_data(...)` converts each trajectory into one or more `tinker.Datum`s:
+Stability:
 
-- It merges consecutive (observation, action) pairs into a single sequence when each new observation is a strict prefix-extension of the prior observation+action context.
-- If the observation is not a prefix-extension (possible when history formatting changes due to truncation or summarization), it closes the current datum and starts a new one.
+- `optim/kl_sample_train_v1`, `optim/kl_sample_train_v2`
+- `optim/entropy`
 
-For each datum, it builds per-token arrays:
+## 10. Implementation Pointers
 
-- `logprobs`: sampler logprobs for action tokens, 0 for observation tokens,
-- `advantages`: broadcasts the trajectory-level advantage \(A_i\) across action tokens, 0 for observation tokens,
-- `mask`: 1 for action tokens, 0 for observation tokens (used locally for diagnostics).
-
-### Optimization objective
-
-Training uses Tinker’s built-in `loss_fn="importance_sampling"` (see `tinker_cookbook/rl/train.py`). Conceptually it is a token-level policy-gradient objective with an importance correction between the sampler policy \(q\) and the current policy \(\pi_\theta\).
-
-## Verifiable Math Variant (What Is Different)
-
-The verifiable environment (`verifiable_env.py`) requires that each `<solution>` contains a final answer in `\\boxed{...}` format. The recipe supports:
-
-- **Training mode (`is_training=True`)**:
-  - rewards: still *comparison-derived step rewards* (identical shaping rule as above),
-  - metrics: logs per-agent and multi-agent aggregation metrics:
-    - Per-agent metrics (one value per agent):
-      - `train_<dataset>/format`: fraction of agent's responses with valid format (not `[INCOMPLETE]` or `[PARSE_ERROR]`),
-      - `train_<dataset>/correct`: 1.0 if agent's latest response is correct, 0.0 otherwise.
-    - Multi-agent aggregation metrics (same value for all agents in the group):
-      - `train_<dataset>/pass@N`: 1.0 if at least one agent produced a correct answer (best-of-N),
-      - `train_<dataset>/avg@N`: mean correctness across all N agents,
-      - `train_<dataset>/cons@N`: 1.0 if more than half of the agents produced correct answers (majority vote).
-
-- **Evaluation mode (`is_training=False`)**:
-  - `eval_mode="debate"`: multi-turn debate, then compute `format`/`correct` from each agent's latest parsed solution.
-  - `eval_mode="direct"`: a separate single-turn env `DirectMathEvaluationEnv` that prompts once and grades the response text.
-
-### Multi-agent aggregation metrics (training only)
-
-For a debate group with \(N\) agents, let \(y_i \in \{0,1\}\) denote whether agent \(i\)'s latest response is correct. Define:
-
-- **pass@N** (optimistic best-of-N):
-  \[
-  \text{pass@N} = \begin{cases}
-  1 & \text{if } \exists i: y_i = 1, \\
-  0 & \text{otherwise}.
-  \end{cases}
-  \]
-
-- **avg@N** (mean accuracy):
-  \[
-  \text{avg@N} = \frac{1}{N} \sum_{i=0}^{N-1} y_i.
-  \]
-
-- **cons@N** (majority consensus):
-  \[
-  \text{cons@N} = \begin{cases}
-  1 & \text{if } \sum_{i=0}^{N-1} y_i > N/2, \\
-  0 & \text{otherwise}.
-  \end{cases}
-  \]
-
-These metrics are computed in `VerifiableMultiAgentEnvGroupBuilder._compute_training_rewards` (`verifiable_env.py:375-397`) and logged for every agent in the group (each agent receives the same aggregation metric values).
-
-Correctness grading uses `tinker_cookbook/recipes/math_rl/math_grading.py` via `safe_grade(...)`, with a configurable `grader` (`"sympy"` or `"math_verify"`) and `grade_timeout`.
-
-## Transcript Logging (Qualitative Debugging)
-
-`utils.py` provides logtree helpers:
-
-- `log_debate_transcript(coordinator)`: logs per-turn system prompt, observation string, parsed fields, and raw response.
-- `log_debate_evaluation_final_solutions(...)` and `log_direct_evaluation(...)`: log verifiable evaluation details.
-
-These are enabled via `log_full_transcript` and logtree’s outer logging context (e.g., the RL trainer’s `num_groups_to_log`).
-
-## Notable Edge Cases / Non-Obvious Behaviors
-
-- **Non-verifiable `history_turns=0` means "no history".** The prompt includes only the question and the per-turn instruction.
-- **Reward accumulation and distribution are decoupled (since reward decay was introduced).** Comparisons accumulate into per-agent totals, which are then normalized and distributed across all agent steps with exponential decay weights. This differs from the legacy behavior (pre-decay) where each comparison directly updated a single step.
-- **Reward normalization scales by episode size.** The comparison normalization factor \(\alpha_\text{comp} = 1/C_\text{valid}\) means that an episode with 10 comparisons contributes the same total magnitude of learning signal as an episode with 2 comparisons (all else equal). Similarly, format penalties scale by the number of eligible turns.
-- **Format penalties apply only after turn 1 (0-indexed).** Turns 0 and 1 are exempt from format checking (`FORMAT_EXEMPT_TURNS=2`), allowing agents to warm up before penalties are applied.
-- **Comparisons are substring-matched.** Only patterns of the form `Agent <int> > Agent <int>` (or `<`) are recognized; ties are not represented.
-- **Self-comparisons are filtered at parse time.** They do not appear in `ParsedResponse.comparisons`, and the count is tracked in `ParsedResponse.self_comparisons_dropped`.
-- **Summarization changes observation prefix structure.** When history is summarized, later observations may no longer be a prefix-extension of earlier observation+action sequences, causing `trajectory_to_data` to split into multiple data items.
-- **Multi-agent aggregation metrics (pass@N, avg@N, cons@N) are logged identically for all agents in a group.** These are group-level metrics, not per-agent metrics. Each agent in the group receives the same value for these metrics in their logged output.
+- `tinker_cookbook/recipes/multi_agent_debate/core/coordinator.py`
+- `tinker_cookbook/recipes/multi_agent_debate/core/prompts.py`
+- `tinker_cookbook/recipes/multi_agent_debate/environments/base.py`
+- `tinker_cookbook/recipes/multi_agent_debate/environments/debate.py`
+- `tinker_cookbook/recipes/multi_agent_debate/environments/verifiable.py`
+- `tinker_cookbook/rl/data_processing.py`
+- `tinker_cookbook/rl/train.py`
