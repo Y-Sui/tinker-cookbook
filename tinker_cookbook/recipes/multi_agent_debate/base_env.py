@@ -6,10 +6,6 @@ verifiable and non-verifiable debate implementations.
 Classes:
     BaseMultiAgentDebateEnv: Base environment with shared step/observation logic
     BaseMultiAgentEnvGroupBuilder: Base builder with shared reward computation
-
-Design Pattern:
-    Template Method - base classes provide shared logic, subclasses override
-    specific methods like get_system_prompt() and get_observation_string().
 """
 
 from abc import ABC, abstractmethod
@@ -43,7 +39,7 @@ DEFAULT_LAMBDA_JUDGE = 1.0  # Weights for Judge
 
 @dataclass
 class Vote:
-    """A single pairwise comparison vote for reward system v2."""
+    """A single pairwise comparison vote for the reward system."""
 
     source_agent: int  # Who made the comparison
     source_turn: int  # Global turn index
@@ -219,11 +215,10 @@ class BaseMultiAgentEnvGroupBuilder(EnvGroupBuilder, ABC):
     pairwise comparisons extracted from agent responses. Subclasses implement
     environment creation and final reward computation.
 
-    Key Method:
-        _populate_stepwise_rewards(): Assigns rewards based on comparisons in
-        agent responses using a leave-one-out approach (agents don't judge
-        themselves). This method was previously duplicated byte-for-byte in
-        both env.py and verifiable_env.py.
+    Key Methods:
+        _compute_rewards(): Computes rewards using win rate + consensus alignment
+            - gen_rewards: Win rate for <solution>/<evaluation> tokens
+            - judge_rewards: Consensus alignment for <comparison> tokens
 
     Subclasses must implement:
         - make_envs(): Create environment instances for this group
@@ -285,102 +280,8 @@ class BaseMultiAgentEnvGroupBuilder(EnvGroupBuilder, ABC):
             temperature=1.0,
         )
 
-    def _populate_stepwise_rewards(
-        self,
-        trajectory_group: list[Trajectory],
-        env_group: Sequence[Env],
-    ) -> dict[str, float]:
-        """
-        Modify trajectories in-place to assign step-wise rewards based on comparisons.
-
-        Reward computation:
-        - Each comparison provides ±1.0 reward assigned to the specific step being compared
-        - Format penalties: -0.5 per missing comparison (if enable_format_penalty=True)
-
-        Returns summary metrics.
-        """
-        env0 = env_group[0]
-        # Get coordinator - works for both MultiAgentDebateEnv and VerifiableMultiAgentDebateEnv
-        if hasattr(env0, "coordinator"):
-            coordinator = env0.coordinator
-        else:
-            raise ValueError(f"Environment {type(env0)} does not have a coordinator")
-
-        # Initialize step-level reward accumulators
-        # step_rewards[agent_id][step_idx] tracks rewards for that specific step
-        step_rewards: list[list[float]] = []
-        for agent_id in range(self.num_agents):
-            num_steps = len(trajectory_group[agent_id].transitions)
-            step_rewards.append([0.0 for _ in range(num_steps)])
-
-        total_valid_comparisons = 0
-        missing_comparisons = 0
-
-        # Step 1: Assign comparison rewards directly to specific steps
-        for turn_idx, response in enumerate(coordinator.state.agent_responses):
-            # Process each comparison from this response
-            for agent_a, op, agent_b in response.comparisons:
-                # Validate agent IDs
-                if not (0 <= agent_a < self.num_agents and 0 <= agent_b < self.num_agents):
-                    continue
-                if agent_a == agent_b:
-                    continue
-                if op not in {">", "<"}:
-                    continue
-
-                # Find step indices for agent_a and agent_b
-                # (most recent step before this turn)
-                agent_a_step_idx = get_step_idx_before_turn(agent_a, turn_idx, self.num_agents)
-                agent_b_step_idx = get_step_idx_before_turn(agent_b, turn_idx, self.num_agents)
-
-                # Skip if either agent hasn't acted yet
-                if agent_a_step_idx < 0 or agent_b_step_idx < 0:
-                    continue
-
-                # Directly assign rewards to the specific steps being compared
-                if op == ">":
-                    step_rewards[agent_a][agent_a_step_idx] += 1.0
-                    step_rewards[agent_b][agent_b_step_idx] -= 1.0
-                elif op == "<":
-                    step_rewards[agent_a][agent_a_step_idx] -= 1.0
-                    step_rewards[agent_b][agent_b_step_idx] += 1.0
-
-                total_valid_comparisons += 1
-
-        # Step 2: Assign format penalties to the step that produced the response
-        if self.enable_format_penalty:
-            for turn_idx, response in enumerate(coordinator.state.agent_responses):
-                # Skip exempt turns (0 and 1)
-                if turn_idx < FORMAT_EXEMPT_TURNS:
-                    continue
-
-                author_id = response.author_id
-                author_step_idx = turn_idx // self.num_agents
-
-                # If there are fewer than two *other* agents who have acted at least once
-                # before this turn, comparisons are not meaningful and the prompts allow "N/A".
-                # In particular, for num_agents <= 2 this prevents penalizing every turn.
-                num_other_agents_who_have_acted = 0
-                for other_agent_id in range(self.num_agents):
-                    if other_agent_id == author_id:
-                        continue
-                    if get_step_idx_before_turn(other_agent_id, turn_idx, self.num_agents) >= 0:
-                        num_other_agents_who_have_acted += 1
-                if num_other_agents_who_have_acted < 2:
-                    continue
-
-                # Check if this response has valid comparisons
-                if len(response.comparisons) == 0:
-                    step_rewards[author_id][author_step_idx] += FORMAT_PENALTY
-                    missing_comparisons += 1
-
-        return {
-            "stepwise_comparisons_used": total_valid_comparisons,
-            "missing_comparisons": missing_comparisons,
-        }
-
     # =========================================================================
-    # Reward System v2: Soft Vote Ratio + Consensus Alignment
+    # Reward System: Win Rate + Consensus Alignment
     # =========================================================================
 
     def _collect_votes(self, coordinator: MultiAgentCoordinator) -> list[Vote]:
@@ -388,7 +289,6 @@ class BaseMultiAgentEnvGroupBuilder(EnvGroupBuilder, ABC):
         Parse all <comparison> tags from all rounds and build vote registry.
 
         Constraints:
-        - Ignores self-votes (where source agent is comparing themselves)
         - Ignores comparisons where either agent hasn't acted yet
 
         Returns:
@@ -404,9 +304,6 @@ class BaseMultiAgentEnvGroupBuilder(EnvGroupBuilder, ABC):
                 if not (0 <= agent_a < self.num_agents and 0 <= agent_b < self.num_agents):
                     continue
                 if agent_a == agent_b:
-                    continue
-                # Skip self-votes (source comparing themselves)
-                if agent_a == source_agent or agent_b == source_agent:
                     continue
 
                 # Get step indices (most recent step before this turn)
@@ -446,13 +343,15 @@ class BaseMultiAgentEnvGroupBuilder(EnvGroupBuilder, ABC):
         num_steps_per_agent: dict[int, int],
     ) -> dict[int, list[float]]:
         """
-        Compute soft vote ratio rewards for generator tokens (<solution> + <evaluation>).
+        Compute win rate rewards for generator tokens (<solution> + <evaluation>).
 
         For each (agent, step), computes:
-            R_gen = sum(votes_for) / count(votes)
+            R_gen = count(wins) / count(total_votes)
 
-        Where votes_for is +1 for wins and -1 for losses.
-        Result is in range [-1, +1], providing dense gradient signal.
+        Result is in range [0, 1], where:
+        - 1.0 = won all comparisons
+        - 0.5 = won half of comparisons
+        - 0.0 = lost all comparisons
 
         Args:
             votes: List of Vote objects from _collect_votes()
@@ -461,31 +360,30 @@ class BaseMultiAgentEnvGroupBuilder(EnvGroupBuilder, ABC):
         Returns:
             {agent_id: [reward_per_step]} for generator rewards
         """
-        # Accumulate votes per (agent, step)
-        vote_sums: dict[tuple[int, int], float] = defaultdict(float)
-        vote_counts: dict[tuple[int, int], int] = defaultdict(int)
+        # Accumulate win counts and total vote counts per (agent, step)
+        win_counts: dict[tuple[int, int], int] = defaultdict(int)
+        total_counts: dict[tuple[int, int], int] = defaultdict(int)
 
         for vote in votes:
-            # Winner gets +1
+            # Winner gets +1 win
             key_w = (vote.winner_agent, vote.winner_step)
-            vote_sums[key_w] += 1.0
-            vote_counts[key_w] += 1
+            win_counts[key_w] += 1
+            total_counts[key_w] += 1
 
-            # Loser gets -1
+            # Loser gets +0 wins but +1 total vote
             key_l = (vote.loser_agent, vote.loser_step)
-            vote_sums[key_l] -= 1.0
-            vote_counts[key_l] += 1
+            total_counts[key_l] += 1
 
-        # Build reward dict with soft vote ratio
+        # Build reward dict with win rate
         gen_rewards: dict[int, list[float]] = {}
         for agent_id in range(self.num_agents):
             num_steps = num_steps_per_agent.get(agent_id, 0)
             rewards = []
             for step in range(num_steps):
                 key = (agent_id, step)
-                if vote_counts[key] > 0:
-                    # Soft vote ratio: average of +1/-1 votes
-                    rewards.append(vote_sums[key] / vote_counts[key])
+                if total_counts[key] > 0:
+                    # Win rate: wins / total_votes
+                    rewards.append(win_counts[key] / total_counts[key])
                 else:
                     rewards.append(0.0)  # No votes = neutral
             gen_rewards[agent_id] = rewards
@@ -560,9 +458,7 @@ class BaseMultiAgentEnvGroupBuilder(EnvGroupBuilder, ABC):
                 continue
 
             for agent_a, op, agent_b in response.comparisons:
-                # Skip self-comparisons and invalid comparisons
-                if agent_a == source_agent or agent_b == source_agent:
-                    continue
+                # Skip invalid comparisons
                 if agent_a == agent_b:
                     continue
 
@@ -632,16 +528,16 @@ class BaseMultiAgentEnvGroupBuilder(EnvGroupBuilder, ABC):
 
         return judge_rewards, missing_comparisons
 
-    def _compute_rewards_v2(
+    def _compute_rewards(
         self,
         trajectory_group: list[Trajectory],
         env_group: Sequence[Env],
     ) -> tuple[dict[int, list[float]], dict[int, list[float]], dict[str, float]]:
         """
-        Compute rewards using v2 system (soft vote ratio + consensus alignment).
+        Compute rewards using win rate + consensus alignment system.
 
-        This replaces _populate_stepwise_rewards() with a two-reward-stream approach:
-        - gen_rewards: For <solution> and <evaluation> tokens (soft vote ratio)
+        Two-reward-stream approach:
+        - gen_rewards: For <solution> and <evaluation> tokens (win rate)
         - judge_rewards: For <comparison> tokens (consensus alignment)
 
         Args:
@@ -679,22 +575,19 @@ class BaseMultiAgentEnvGroupBuilder(EnvGroupBuilder, ABC):
         total_steps = sum(num_steps_per_agent.values())
         comparison_lines_total = 0
         comparison_lines_invalid = 0
-        self_comparisons_dropped = 0
         comparison_pairs_tie = 0
         for response in coordinator.state.agent_responses:
             comparison_lines_total += response.comparison_lines_total
             comparison_lines_invalid += response.comparison_lines_invalid
-            self_comparisons_dropped += response.self_comparisons_dropped
             comparison_pairs_tie += response.comparison_pairs_tie
 
         metrics = {
-            "v2/total_votes": float(len(votes)),
-            "v2/votes_per_step": float(len(votes)) / max(1, total_steps),
-            "v2/missing_comparisons": float(missing_comparisons),
-            "v2/comparison_lines_total": float(comparison_lines_total),
-            "v2/comparison_lines_invalid": float(comparison_lines_invalid),
-            "v2/self_comparisons_dropped": float(self_comparisons_dropped),
-            "v2/comparison_pairs_tie": float(comparison_pairs_tie),
+            "reward/total_votes": float(len(votes)),
+            "reward/votes_per_step": float(len(votes)) / max(1, total_steps),
+            "reward/missing_comparisons": float(missing_comparisons),
+            "reward/comparison_lines_total": float(comparison_lines_total),
+            "reward/comparison_lines_invalid": float(comparison_lines_invalid),
+            "reward/comparison_pairs_tie": float(comparison_pairs_tie),
         }
 
         return gen_rewards, judge_rewards, metrics

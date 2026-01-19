@@ -94,10 +94,22 @@ class CLIConfig:
     verifiable_problem_field: str = "problem"
     verifiable_answer_field: str = "answer"
     verifiable_grader: Literal["sympy", "math_verify"] = "sympy"
+    verifiable_dataset_name: Literal["math", "math500", "polaris", "deepmath", "gsm8k"] | None = (
+        None
+    )
+    verifiable_dataset_split: Literal["train", "test"] = "train"
     max_questions: int = -1  # Max problems to load (-1 = all)
+    verifiable_eval_dataset_name: (
+        Literal["math", "math500", "polaris", "deepmath", "gsm8k"] | None
+    ) = None
+    verifiable_eval_dataset_split: Literal["train", "test"] = "test"
+    verifiable_eval_dataset_path: str | None = None
+    verifiable_eval_problem_field: str = "problem"
+    verifiable_eval_answer_field: str = "answer"
+    verifiable_eval_max_questions: int = -1
 
     # ============================================================================
-    # Reward System Configuration (v2)
+    # Reward System Configuration
     # ============================================================================
     enable_format_penalty: bool = True  # Penalize missing/invalid comparisons
     lambda_gen: float = 1.0  # Weight for generator loss (<solution>/<evaluation> tokens)
@@ -128,6 +140,8 @@ def _build_verifiable_dataset_builder(
         dataset_path=cli_config.verifiable_dataset_path,
         problem_field=cli_config.verifiable_problem_field,
         answer_field=cli_config.verifiable_answer_field,
+        dataset_name=cli_config.verifiable_dataset_name,
+        dataset_split=cli_config.verifiable_dataset_split,
         grader=cli_config.verifiable_grader,
         max_questions=cli_config.max_questions,
         enable_format_penalty=cli_config.enable_format_penalty,
@@ -171,7 +185,10 @@ def build_config(cli_config: CLIConfig) -> train.Config:
     # Model setup
     model_name = cli_config.model_name
     renderer_name = cli_config.renderer_name or model_info.get_recommended_renderer_name(model_name)
-    dataset_name = Path(cli_config.verifiable_dataset_path).stem.split("_sample")[0]
+    if cli_config.verifiable_dataset_name:
+        dataset_name = cli_config.verifiable_dataset_name
+    else:
+        dataset_name = Path(cli_config.verifiable_dataset_path).stem.split("_sample")[0]
 
     # Generate run name and paths
     timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M")
@@ -213,14 +230,38 @@ def build_config(cli_config: CLIConfig) -> train.Config:
     )
 
 
-def _create_verifiable_evaluator(cli_config: CLIConfig, train_dataset) -> MultiAgentDebateEvaluator:
+def _create_verifiable_evaluator(
+    cli_config: CLIConfig, train_dataset
+) -> MultiAgentDebateEvaluator:
     """Create dual-mode evaluator for verifiable environment.
 
     This evaluator runs both direct (single-turn) and debate (multi-turn) evaluation
     on ALL problems in the dataset every eval_every steps.
     """
+    if cli_config.verifiable_eval_dataset_name:
+        from tinker_cookbook.recipes.multi_agent_debate.loaders import load_math_problems_from_hf
+
+        eval_problems = load_math_problems_from_hf(
+            dataset_name=cli_config.verifiable_eval_dataset_name,
+            split=cli_config.verifiable_eval_dataset_split,
+            max_count=cli_config.verifiable_eval_max_questions,
+        )
+    elif cli_config.verifiable_eval_dataset_path:
+        from tinker_cookbook.recipes.multi_agent_debate.loaders import (
+            load_math_problems_from_jsonl,
+        )
+
+        eval_problems = load_math_problems_from_jsonl(
+            path=cli_config.verifiable_eval_dataset_path,
+            problem_field=cli_config.verifiable_eval_problem_field,
+            answer_field=cli_config.verifiable_eval_answer_field,
+            max_count=cli_config.verifiable_eval_max_questions,
+        )
+    else:
+        eval_problems = train_dataset.problems
+
     return MultiAgentDebateEvaluator(
-        problems=train_dataset.problems,
+        problems=eval_problems,
         renderer=train_dataset.renderer,
         num_agents=cli_config.num_agents,
         max_rounds=cli_config.max_rounds,

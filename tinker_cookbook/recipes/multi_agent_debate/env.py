@@ -36,7 +36,6 @@ class MultiAgentDebateEnv(BaseMultiAgentDebateEnv):
         """Get the system prompt for this agent."""
         persona_intro = format_persona_intro(self.agent_id)
         return AGENT_SYSTEM_PROMPT.format(
-            agent_id=self.agent_id,
             persona_intro=persona_intro,
         )
 
@@ -196,9 +195,9 @@ class MultiAgentEnvGroupBuilder(BaseMultiAgentEnvGroupBuilder):
                 # This is the easiest way to inspect the entire conversation across all turns/agents.
                 log_debate_transcript(coordinator)
 
-            # Use v2 reward system (soft vote ratio + consensus alignment)
+            # Compute rewards using win rate + consensus alignment
             # gen_rewards and judge_rewards are computed but only used for metrics
-            gen_rewards, judge_rewards, v2_metrics = self._compute_rewards_v2(
+            gen_rewards, judge_rewards, reward_metrics = self._compute_rewards(
                 trajectory_group, env_group
             )
 
@@ -223,18 +222,18 @@ class MultiAgentEnvGroupBuilder(BaseMultiAgentEnvGroupBuilder):
             ]
 
             if all_gen_rewards:
-                v2_metrics["reward/gen/mean"] = float(np.mean(all_gen_rewards))
-                v2_metrics["reward/gen/std"] = float(np.std(all_gen_rewards))
+                reward_metrics["reward/gen/mean"] = float(np.mean(all_gen_rewards))
+                reward_metrics["reward/gen/std"] = float(np.std(all_gen_rewards))
             if all_judge_rewards:
-                v2_metrics["reward/judge/mean"] = float(np.mean(all_judge_rewards))
-                v2_metrics["reward/judge/std"] = float(np.std(all_judge_rewards))
+                reward_metrics["reward/judge/mean"] = float(np.mean(all_judge_rewards))
+                reward_metrics["reward/judge/std"] = float(np.std(all_judge_rewards))
 
             return [
                 (
                     0.0,  # No final reward (all rewards are in steps)
                     {
                         "agent_id": agent_id,
-                        **v2_metrics,
+                        **reward_metrics,
                     },
                 )
                 for agent_id in range(self.num_agents)

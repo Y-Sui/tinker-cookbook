@@ -41,7 +41,7 @@ from tinker_cookbook.tokenizer_utils import get_tokenizer
 
 from .base_env import BaseMultiAgentDebateEnv, BaseMultiAgentEnvGroupBuilder
 from .coordinator import MultiAgentCoordinator
-from .loaders import load_math_problems_from_jsonl
+from .loaders import load_math_problems_from_hf, load_math_problems_from_jsonl
 from .prompts import VERIFIABLE_AGENT_SYSTEM_PROMPT, ParsedResponse, format_persona_intro
 from .utils import (
     STOP_CONDITION,
@@ -126,18 +126,13 @@ class VerifiableMultiAgentDebateEnv(BaseMultiAgentDebateEnv):
     def get_system_prompt(self) -> str:
         persona_intro = format_persona_intro(self.agent_id)
         return VERIFIABLE_AGENT_SYSTEM_PROMPT.format(
-            agent_id=self.agent_id,
             persona_intro=persona_intro,
         )
 
     def _format_turns(self, turns: list[ParsedResponse], start_offset: int = 0) -> str:
-        """Format history with blind review (comparisons are hidden).
+        """Format history showing all response sections.
 
-        Blind review ensures agents form independent judgments by hiding
-        previous <comparison> tags. This prevents bandwagon effects and
-        produces more meaningful consensus for reward computation.
-
-        Only <solution> and <evaluation> are shown in history.
+        Shows <solution>, <evaluation>, and <comparison> tags in history.
         """
         if not turns:
             return ""
@@ -151,8 +146,8 @@ class VerifiableMultiAgentDebateEnv(BaseMultiAgentDebateEnv):
             lines.append(response.solution.rstrip())
             lines.append(f"{agent_label}'s Evaluation:")
             lines.append(response.evaluation.rstrip())
-            # BLIND REVIEW: Comparisons are intentionally hidden from history
-            # so that each agent forms independent judgments
+            lines.append(f"{agent_label}'s Comparison:")
+            lines.append(response.comparison_text.rstrip())
             lines.append("")
         lines.append("--- END OF HISTORY ---\n")
         return "\n".join(lines).rstrip()
@@ -313,8 +308,8 @@ class VerifiableMultiAgentEnvGroupBuilder(BaseMultiAgentEnvGroupBuilder):
     ) -> list[tuple[float, Metrics]]:
         """Compute rewards and metrics for training mode.
 
-        Uses v2 reward system:
-        - gen_rewards: Soft vote ratio for <solution>/<evaluation> tokens
+        Reward system:
+        - gen_rewards: Win rate for <solution>/<evaluation> tokens
         - judge_rewards: Consensus alignment for <comparison> tokens
 
         These are stored in trajectory_group[agent_id].gen_rewards and
@@ -324,8 +319,8 @@ class VerifiableMultiAgentEnvGroupBuilder(BaseMultiAgentEnvGroupBuilder):
         assert isinstance(env0, VerifiableMultiAgentDebateEnv)
         coordinator = env0.coordinator
 
-        # Use v2 reward system (soft vote ratio + consensus alignment)
-        gen_rewards, judge_rewards, v2_metrics = self._compute_rewards_v2(
+        # Compute rewards using win rate + consensus alignment
+        gen_rewards, judge_rewards, reward_metrics = self._compute_rewards(
             trajectory_group, env_group
         )
 
@@ -351,11 +346,11 @@ class VerifiableMultiAgentEnvGroupBuilder(BaseMultiAgentEnvGroupBuilder):
         ]
 
         if all_gen_rewards:
-            v2_metrics["reward/gen/mean"] = float(np.mean(all_gen_rewards))
-            v2_metrics["reward/gen/std"] = float(np.std(all_gen_rewards))
+            reward_metrics["reward/gen/mean"] = float(np.mean(all_gen_rewards))
+            reward_metrics["reward/gen/std"] = float(np.std(all_gen_rewards))
         if all_judge_rewards:
-            v2_metrics["reward/judge/mean"] = float(np.mean(all_judge_rewards))
-            v2_metrics["reward/judge/std"] = float(np.std(all_judge_rewards))
+            reward_metrics["reward/judge/mean"] = float(np.mean(all_judge_rewards))
+            reward_metrics["reward/judge/std"] = float(np.std(all_judge_rewards))
 
         # Compute accuracy metrics for monitoring (NOT used as rewards)
         dataset_name = problem.dataset_name
@@ -422,7 +417,7 @@ class VerifiableMultiAgentEnvGroupBuilder(BaseMultiAgentEnvGroupBuilder):
             (
                 0.0,  # No final reward (all rewards are already in trajectory steps)
                 {
-                    **v2_metrics,  # v2 reward system metrics
+                    **reward_metrics,  # v2 reward system metrics
                     f"train_{dataset_name}/format": accuracy_metrics[agent_id]["train_format"],
                     f"train_{dataset_name}/correct": accuracy_metrics[agent_id]["train_correct"],
                     f"train_{dataset_name}/pass@{self.num_agents}": 1.0 if any_correct else 0.0,
@@ -602,6 +597,8 @@ class VerifiableMathDebateDatasetBuilder(RLDatasetBuilder):
     dataset_path: str
     problem_field: str
     answer_field: str
+    dataset_name: Literal["math", "math500", "polaris", "deepmath", "gsm8k"] | None = None
+    dataset_split: Literal["train", "test"] = "train"
 
     # Optional fields (with defaults)
     epoch: int = 1
@@ -637,12 +634,19 @@ class VerifiableMathDebateDatasetBuilder(RLDatasetBuilder):
             renderer = get_renderer(self.renderer_name, tokenizer)
 
         # Load ALL problems from dataset (no train/test split for online TTL)
-        all_problems = load_math_problems_from_jsonl(
-            path=self.dataset_path,
-            problem_field=self.problem_field,
-            answer_field=self.answer_field,
-            max_count=self.max_questions,
-        )
+        if self.dataset_name:
+            all_problems = load_math_problems_from_hf(
+                dataset_name=self.dataset_name,
+                split=self.dataset_split,
+                max_count=self.max_questions,
+            )
+        else:
+            all_problems = load_math_problems_from_jsonl(
+                path=self.dataset_path,
+                problem_field=self.problem_field,
+                answer_field=self.answer_field,
+                max_count=self.max_questions,
+            )
 
         # Training dataset: samples num_train_datapoints from all problems
         if self.num_train_datapoints > len(all_problems) or self.num_train_datapoints < 0:

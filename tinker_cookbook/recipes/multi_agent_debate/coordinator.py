@@ -7,10 +7,6 @@ The coordinator supports **parallel generation within each round (cycle)**:
 - All agents in a cycle generate their responses simultaneously
 - They all see the same history (responses from previous cycles only)
 - This ensures independent judgments and faster training
-
-Type Aliases:
-    AgentId: Integer identifier for an agent (0-indexed)
-    TurnIndex: Integer index for a turn in the conversation
 """
 
 import asyncio

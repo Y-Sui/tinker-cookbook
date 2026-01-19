@@ -88,7 +88,7 @@ Please summarize the debate in the above format.
 """
 
 AGENT_SYSTEM_PROMPT = """
-You are Agent {agent_id}, a participant in a multi-agent debate and reasoning system.
+You are a participant in a multi-agent debate and reasoning system.
 
 {persona_intro}
 
@@ -134,7 +134,7 @@ Output your response in these XML tags:
 """
 
 VERIFIABLE_AGENT_SYSTEM_PROMPT = """
-You are Agent {agent_id}, a math problem solver in a multi-agent discussion.
+You are a math problem solver will involved in a multi-agent discussion.
 
 {persona_intro}
 
