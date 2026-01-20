@@ -421,13 +421,17 @@ def normalize_rewards_separately(
 ) -> tuple[List[List[List[float]]], List[List[List[float]]]]:
     """Compute centered advantages for gen_rewards and judge_rewards separately.
 
-    For the v2 reward system, generator and judge rewards have different meanings:
-    - gen_rewards: Soft vote ratio in [-1, +1], measures peer approval
-    - judge_rewards: Consensus alignment in [-1, +1], measures judgment accuracy
+    For the two-stream reward system, generator and judge rewards have different meanings:
+    - gen_rewards: Win rate for <solution>/<evaluation> tokens, measures peer approval
+    - judge_rewards: Consensus alignment for <comparison> tokens, measures judgment accuracy
 
-    Each reward type is centered independently by subtracting its mean across
-    ALL steps of ALL trajectories in the batch. This matches the behavior of
-    compute_stepwise_advantages() but applied separately to each reward stream.
+    Each reward type is centered independently WITHIN EACH GROUP by subtracting the
+    group mean. This ensures advantages reflect relative performance among agents
+    debating the SAME problem, which aligns with the debate structure and prevents
+    problem difficulty from confounding the learning signal.
+
+    This matches the behavior of compute_stepwise_advantages() but applied separately
+    to each reward stream.
 
     Args:
         trajectory_groups_P: List of trajectory groups with gen_rewards/judge_rewards
@@ -438,26 +442,25 @@ def normalize_rewards_separately(
         - gen_advantages_P_G_S: Centered generator advantages [problem][traj][step]
         - judge_advantages_P_G_S: Centered judge advantages [problem][traj][step]
     """
-    # Collect all rewards across the batch to compute means
-    all_gen_rewards: List[float] = []
-    all_judge_rewards: List[float] = []
+    gen_advantages_P_G_S: List[List[List[float]]] = []
+    judge_advantages_P_G_S: List[List[List[float]]] = []
 
     for traj_group in trajectory_groups_P:
+        # Collect all rewards within this group only
+        all_gen_rewards: List[float] = []
+        all_judge_rewards: List[float] = []
+
         for traj in traj_group.trajectories_G:
             gen_rewards = getattr(traj, "gen_rewards", [])
             judge_rewards = getattr(traj, "judge_rewards", [])
             all_gen_rewards.extend(gen_rewards)
             all_judge_rewards.extend(judge_rewards)
 
-    # Compute means for centering
-    gen_mean = sum(all_gen_rewards) / len(all_gen_rewards) if all_gen_rewards else 0.0
-    judge_mean = sum(all_judge_rewards) / len(all_judge_rewards) if all_judge_rewards else 0.0
+        # Compute group-level means for centering
+        gen_mean = sum(all_gen_rewards) / len(all_gen_rewards) if all_gen_rewards else 0.0
+        judge_mean = sum(all_judge_rewards) / len(all_judge_rewards) if all_judge_rewards else 0.0
 
-    # Build centered advantages
-    gen_advantages_P_G_S: List[List[List[float]]] = []
-    judge_advantages_P_G_S: List[List[List[float]]] = []
-
-    for traj_group in trajectory_groups_P:
+        # Build centered advantages within this group
         gen_group: List[List[float]] = []
         judge_group: List[List[float]] = []
 
@@ -465,7 +468,7 @@ def normalize_rewards_separately(
             gen_rewards = getattr(traj, "gen_rewards", [])
             judge_rewards = getattr(traj, "judge_rewards", [])
 
-            # Center by subtracting mean (consistent with compute_stepwise_advantages)
+            # Center by subtracting group mean (consistent with compute_stepwise_advantages)
             gen_adv = [r - gen_mean for r in gen_rewards]
             judge_adv = [r - judge_mean for r in judge_rewards]
 

@@ -92,74 +92,77 @@ You are a participant in a multi-agent debate and reasoning system.
 
 {persona_intro}
 
-YOUR GOAL:
-Collaborate to provide the best possible answer to the user query while evaluating your peers.
+GOAL:
+Collaborate to provide the best possible answer to the user query while evaluating all agents' contributions.
 
 INPUT CONTEXT:
-You will receive a User Query and a History of previous turns (solutions and evaluations from other agents).
+The input contains a User Query and a History of previous turns (solutions and evaluations from all agents).
 
 INSTRUCTIONS:
 
-1. **Construct Your Solution**:
+1. **Construct Solution**:
    - Think deeply about the user query.
    - Formulate a comprehensive, nuanced, and accurate answer.
-   - Do not reference other agents in your solution; focus only on the query.
+   - Focus only on the query; do not reference other agents in the solution.
 
-2. **Evaluate Peers**:
+2. **Evaluate All Agents**:
    - Review the "History" provided.
-   - For EACH other agent, analyze their solution accuracy and reasoning quality.
+   - For EACH agent in history, analyze their solution accuracy and reasoning quality.
+   - Provide balanced, objective critiques.
 
-3. **Rank Peers (Pairwise Comparison)**:
-   - Compare the overall quality of every pair of other agents visible in history.
-   - Exclude yourself (Agent {agent_id}) from these rankings.
+3. **Rank Agents (Pairwise Comparison)**:
+   - Compare the overall quality of every pair of agents visible in history.
+   - All agents can be included in rankings.
+   - Provide brief justification for each comparison.
 
 OUTPUT FORMAT:
-Output your response in these XML tags:
+Output response in these XML tags:
 
 <solution>
-[Your answer to the user query.]
+[Answer to the user query.]
 </solution>
 
 <evaluation>
-[If no other agents have spoken, write "N/A".]
-[Otherwise, for each other agent: brief critique of their solution.]
+[If no agents in history, write "N/A".]
+[Otherwise, for each agent: brief critique of their solution and reasoning quality.]
 </evaluation>
 
 <comparison>
-[If fewer than 2 other agents, write "N/A".]
-[Compare pairs of other agents. One per line. Format: Agent X > Agent Y]
-[Use only > or < (you must choose which is better). Do not include Agent {agent_id}.]
-[No ties or equalities. Do NOT use "=", "≈", "tie", or prose explanations in <comparison>.]
+[If fewer than 2 agents in history, write "N/A".]
+[Compare pairs of agents. One per line. Format: Agent X > Agent Y: [brief reason]]
+[Use >, <, or = operators. For ties, use = (e.g., "Agent 0 = Agent 1: both correct")]
+[REQUIRED: Provide brief justification after each comparison.]
 </comparison>
 """
 
 VERIFIABLE_AGENT_SYSTEM_PROMPT = """
-You are a math problem solver will involved in a multi-agent discussion.
+You are a math problem solver in a multi-agent discussion.
 
 {persona_intro}
 
 INPUT CONTEXT:
-You will receive a User Query and a History of previous turns (if any). The User Query is a verifiable problem requiring a precise final answer. Please use \\boxed{{answer}} for your response. The History contains other agents' solutions and evaluations from last round conversation.
+The input contains a User Query and a History of previous turns (if any). The User Query is a verifiable problem requiring a precise final answer in \\boxed{{answer}} format. The History contains all agents' solutions and evaluations from previous rounds.
 
 INSTRUCTIONS:
-You should structure your response into three sections: Solution, Evaluation, and Comparison. Follow the instructions for each section carefully.
+Structure the response into three sections: Solution, Evaluation, and Comparison. Follow the instructions for each section carefully.
 
-**1. Derive Your Solution**:
+**1. Derive Solution**:
    - Use step-by-step chain-of-thought reasoning.
    - Verify every calculation and logical inference.
-   - **CRITICAL**: You MUST end your solution with the final answer in LaTeX boxed format, e.g., \\boxed{{42}}.
+   - **CRITICAL**: MUST end solution with the final answer in LaTeX boxed format, e.g., \\boxed{{42}}.
 
-**2. Evaluate Peers**:
-   - Review the "History of previous turns from last round", they contains the full logs of agents solutions and evaluation.
-   - Check every line of other agents' solutions and evaluations (if any).
-   - Critique each other agent on two fronts: 
-    (1) their solution correctness, completeness, and reasoning quality, did they arrive at the right final answer? and adequately justify it?; and
-    (2) their evaluation quality, did they fairly and accurately assess others? did they spot errors or hallucinate? did they provide the aligned evaluation with the generated pairwise comparison?
+**2. Evaluate All Agents**:
+   - Review the "History of previous turns", which contains the full logs of all agents' solutions and evaluations.
+   - Check every line of all agents' solutions and evaluations (if any).
+   - Critique each agent on two fronts:
+    (1) solution correctness, completeness, and reasoning quality - did they arrive at the right final answer and adequately justify it?
+    (2) evaluation quality - did they fairly and accurately assess others? did they spot errors or hallucinate? is their evaluation aligned with their pairwise comparisons?
 
-**3. Compare Peers**:
-   - Perform pairwise comparisons of agents visible in history based on their solutions and evaluations.
+**3. Compare Agents (Pairwise)**:
+   - Perform pairwise comparisons of all agents visible in history based on their solutions and evaluations.
    - Correctness is paramount. An agent with the correct final answer (derived correctly) > Agent with wrong answer.
    - If both agents' solutions are correct, compare their reasoning depth, justification, and evaluation quality.
+   - **REQUIRED**: Provide brief justification for each comparison.
 
 OUTPUT FORMAT:
 
@@ -168,13 +171,14 @@ OUTPUT FORMAT:
 </solution>
 
 <evaluation>
-[Review other agents' solutions. Write "N/A" if you're first.]
+[Review all agents' solutions. Write "N/A" if no history.]
 </evaluation>
 
 <comparison>
-[Rank pairs of other agents, e.g., "Agent 0 > Agent 1". Write "N/A" if fewer than 2 others.]
-[Use only > or < (you must pick a winner)]
-[Also provide the justification for your comparison in <comparison>.]
+[Rank pairs of agents. Format: Agent X > Agent Y: [brief reason]
+[Write "N/A" if fewer than 2 agents in history.]
+[Use >, <, or = operators.]
+[REQUIRED: Provide brief justification after each comparison.]
 </comparison>
 """.strip()
 
@@ -318,13 +322,13 @@ def parse_agent_response(
     comparison_lines_invalid = 0
     comparison_pairs_tie = 0
     if comparison_text:
-        # Match "Agent 1 > Agent 2" (also tolerates legacy "(R1)" round annotations)
+        # Match "Agent 1 > Agent 2" or "Agent 1 = Agent 2" (also tolerates legacy "(R1)" round annotations)
         pair_pattern = re.compile(
             r"Agent\s+(\d+)(?:\s*\(R\d+\))?\s*([><])\s*Agent\s+(\d+)(?:\s*\(R\d+\))?",
             flags=re.IGNORECASE,
         )
         tie_symbol_pattern = re.compile(
-            r"Agent\s+(\d+)(?:\s*\(R\d+\))?\s*(?:=|≈|==)\s*Agent\s+(\d+)(?:\s*\(R\d+\))?",
+            r"Agent\s+(\d+)(?:\s*\(R\d+\))?\s*(=|≈|==)\s*Agent\s+(\d+)(?:\s*\(R\d+\))?",
             flags=re.IGNORECASE,
         )
         tie_word_pattern = re.compile(
@@ -337,6 +341,7 @@ def parse_agent_response(
             if line.lower() == "n/a":
                 continue
             line_has_any = False
+            # Match strict comparisons (> or <)
             for match in pair_pattern.finditer(line):
                 line_has_any = True
                 agent_a, op, agent_b = match.groups()
@@ -346,11 +351,27 @@ def parse_agent_response(
                     self_comparisons_dropped += 1
                     continue
                 comparisons.append((a_id, op, b_id))
+            # Match ties with symbols (=, ≈, ==)
             for match in tie_symbol_pattern.finditer(line):
                 line_has_any = True
+                agent_a, tie_op, agent_b = match.groups()
+                a_id = int(agent_a)
+                b_id = int(agent_b)
+                if a_id == author_id or b_id == author_id:
+                    self_comparisons_dropped += 1
+                    continue
+                comparisons.append((a_id, "=", b_id))
                 comparison_pairs_tie += 1
+            # Match ties with words ("Agent X and Agent Y are tied")
             for match in tie_word_pattern.finditer(line):
                 line_has_any = True
+                agent_a, agent_b = match.groups()
+                a_id = int(agent_a)
+                b_id = int(agent_b)
+                if a_id == author_id or b_id == author_id:
+                    self_comparisons_dropped += 1
+                    continue
+                comparisons.append((a_id, "=", b_id))
                 comparison_pairs_tie += 1
             if not line_has_any:
                 comparison_lines_invalid += 1

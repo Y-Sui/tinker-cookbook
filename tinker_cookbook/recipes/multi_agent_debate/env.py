@@ -101,36 +101,33 @@ class MultiAgentDebateEnv(BaseMultiAgentDebateEnv):
         current_cycle = self.coordinator.state.get_current_cycle()
         num_agents = self.coordinator.state.num_agents
 
-        # With parallel generation, count OTHER agents from committed responses only.
-        # In cycle N, all agents see responses from cycles 0..N-1.
-        # All other (num_agents - 1) agents have responded in previous cycles if cycle > 0.
-        num_other_agents = num_agents - 1 if current_cycle > 0 else 0
+        # With parallel generation, agents in cycle N see responses from cycles 0..N-1.
+        # All agents (including self) have responded in previous cycles if cycle > 0.
+        num_agents_in_history = num_agents if current_cycle > 0 else 0
 
         # Build guidance for evaluation and comparison based on what's available
-        if num_other_agents == 0:
-            eval_guidance = 'Set <evaluation> to "N/A" (no other agents have responded yet).'
-            comp_guidance = 'Set <comparison> to "N/A" (no other agents to compare).'
-        elif num_other_agents == 1:
-            eval_guidance = "Evaluate the other agent's solution and reasoning."
-            comp_guidance = 'Set <comparison> to "N/A" (need at least 2 other agents to compare).'
+        if num_agents_in_history == 0:
+            eval_guidance = 'Set <evaluation> to "N/A" (no agents have responded yet).'
+            comp_guidance = 'Set <comparison> to "N/A" (no history available for comparison).'
+        elif num_agents_in_history == 1:
+            eval_guidance = "Evaluate the agent's solution and reasoning from previous round."
+            comp_guidance = 'Set <comparison> to "N/A" (need at least 2 agents to compare).'
         else:
-            eval_guidance = "Evaluate each other agent's solution and reasoning."
-            comp_guidance = (
-                f"Compare pairs of other agents (do not include yourself, Agent {self.agent_id})."
-            )
+            eval_guidance = "Evaluate each agent's solution and reasoning quality."
+            comp_guidance = "Compare pairs of agents with brief justifications."
 
         # First cycle prompt (no history available)
         if current_cycle == 0:
             return (
                 f"Question: {self.coordinator.state.question}\n\n"
-                f"Agent {self.agent_id}, please proceed with your response.\n"
+                f"Please proceed with the response.\n"
                 f"{eval_guidance}\n{comp_guidance}"
             )
         else:
             # Regular turn prompt (with history from previous cycles)
             return (
                 f"{history}\n\nQuestion: {self.coordinator.state.question}\n\n"
-                f"Agent {self.agent_id}, it is your turn.\n"
+                f"Please generate the response.\n"
                 f"{eval_guidance}\n{comp_guidance}"
             )
 

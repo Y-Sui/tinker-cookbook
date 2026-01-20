@@ -2,13 +2,13 @@
 
 ## Plain-language summary
 
-A single language model is trained (or evaluated) in self-play by having it personate multiple “agents” who debate the same question over several rounds. Agents take turns. On each turn an agent must produce three parts: (1) a proposed solution, (2) a critique/meta-critique of the discussion, and (3) pairwise comparisons that rank other agents (e.g., “Agent 0 > Agent 2”).
+ single language model is trained in self-play by having it personate multiple “agents” who debate the same question over several rounds. Agents run in rounds. On each round, each agent receives the user query Q, and the exchanges from last round, and must produce three parts: (1) a proposed solution, (2) a critique/meta-critique of the discussion, and (3) pairwise comparisons that rank other agents (e.g., “Agent 0 > Agent 2”). By default we consider we have three agents.
 
-The core learning signal comes from these peer comparisons rather than from task correctness. Every time an agent states a comparison “A > B”, the system treats it as a win for A and a loss for B. Across the whole debate, each agent accumulates positive and negative comparison points based on how often they are ranked above or below others. Optionally, agents are also penalized when they fail to provide any valid comparisons on turns where comparisons are expected (with early turns exempt to allow “warm-up”). The idea here is that the judge comparison is based on both generation, and evaluation, if the agent's evaluation has some issues, they might also been judged as bad completion. By doing this, we also judge the judge capabilities.
+The core learning signal comes from these peer comparisons rather than from task correctness. Every time an agent states a comparison “A > B”, the system treats it as a win for A and a loss for B from the last round. Across the whole debate, each agents' completion will accumulates positive and negative comparison points based on how often they are ranked above or below others. These round-base completions are also penalized when they fail to provide any valid comparisons on turns where comparisons are expected (with early turns exempt to allow “warm-up”). The idea here is that the judge comparison is based on both generation, and evaluation. For example, if at round 2, the agent's evaluation has some issues, they might also been judged by agents from round 3 as bad completion. As result, the agent's bad judgement in round 2 will also be penalized. By doing this, the judge quality can also been judged. The novelty here is that we fuse the generation and evaluation as one task, and expect the model can improve both capabilities together during policy updates.
 
-Rewards are not given immediately while the agents are generating text. Instead, the full transcript is collected first, then rewards are computed afterward from all comparisons and penalties. The rewards are distributed to the corresponding steps been compared. For example, if agent 2's pairwise comparison shows that agent 0's completion is better than agent 1's completion. Then agent 0's completion will be rewarded.
+Noted that Rewards are not given immediately while the agents are generating text. Instead, the full transcript is collected first, then rewards are computed afterward from all comparisons and penalties. The rewards are distributed to the corresponding rounds been compared. For example, if agent 2's pairwise comparison (in round 2) shows that agent 0's completion is better than agent 1's completion. Then agent 0's completion (in round 1) will be rewarded.
 
-For optimization, each agent’s total return is converted into an advantage by subtracting the average return within the same debate group (so training focuses on relative performance between agents on the same prompt). That advantage is applied to the tokens the agent generated, yielding a token-level policy-gradient style update with an importance-sampling correction between the policy that generated the data and the current policy.
+For optimization, each agent's round reward is converted into an advantage. That advantage is applied to the tokens the agent generated, yielding a token-level policy-gradient style update with an importance-sampling correction between the policy that generated the data and the current policy.
 
 There are two variants. In the non-verifiable version, the only training signal is the peer-comparison mechanism. In the verifiable math version, training is still driven by comparisons, but the system also checks whether each agent’s final answer matches ground truth (with a required boxed-answer format) and logs additional metrics such as best-of-N success (at least one agent correct), average correctness across agents, and majority-consensus correctness. The verifiable setup can also be run in evaluation modes that either perform a full debate or do a single direct answer attempt.
 
@@ -278,12 +278,17 @@ skipped unless at least two other agents have acted.
 
 ## 6. Advantage Computation and Training Data
 
-Rewards are normalized separately across the batch:
+Rewards are centered separately **within each debate group** (not across the batch):
 
 \[
-A^{gen}_{i,s} = R^{gen}_{i,s} - \mu_{gen},\quad
-A^{judge}_{i,s} = R^{judge}_{i,s} - \mu_{judge}
+A^{gen}_{i,s} = R^{gen}_{i,s} - \mu^{\text{group}}_{\text{gen}},\quad
+A^{judge}_{i,s} = R^{judge}_{i,s} - \mu^{\text{group}}_{\text{judge}}
 \]
+
+where $\mu^{\text{group}}_{\text{gen}}$ and $\mu^{\text{group}}_{\text{judge}}$ are computed over
+all steps of all agents **in the same debate group**. This ensures advantages reflect
+relative performance among agents debating the same problem, preventing problem
+difficulty from confounding the learning signal.
 
 The combined step advantage is:
 

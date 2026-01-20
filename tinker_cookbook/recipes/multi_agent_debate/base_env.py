@@ -290,9 +290,10 @@ class BaseMultiAgentEnvGroupBuilder(EnvGroupBuilder, ABC):
 
         Constraints:
         - Ignores comparisons where either agent hasn't acted yet
+        - Handles ties (=) by skipping them for win/loss computation
 
         Returns:
-            List of Vote objects representing all valid pairwise comparisons
+            List of Vote objects representing all valid pairwise comparisons (excluding ties)
         """
         votes: list[Vote] = []
 
@@ -315,12 +316,16 @@ class BaseMultiAgentEnvGroupBuilder(EnvGroupBuilder, ABC):
                     continue
 
                 # Determine winner/loser based on comparison operator
+                # For ties (=), we skip adding to votes list (no winner/loser)
                 if op == ">":
                     winner_agent, winner_step = agent_a, step_a
                     loser_agent, loser_step = agent_b, step_b
                 elif op == "<":
                     winner_agent, winner_step = agent_b, step_b
                     loser_agent, loser_step = agent_a, step_a
+                elif op == "=":
+                    # Tie: neither wins nor loses, skip for win rate computation
+                    continue
                 else:
                     continue
 
@@ -418,6 +423,7 @@ class BaseMultiAgentEnvGroupBuilder(EnvGroupBuilder, ABC):
         # Step 1: Build consensus for each pair
         # Key: (min_agent, min_step, max_agent, max_step) - normalized ordering
         # Value: list of +1 (first agent won) or -1 (second agent won)
+        # Note: Tie votes (=) are NOT included in votes list, so they don't affect consensus sum
         pair_votes: dict[tuple[int, int, int, int], list[int]] = defaultdict(list)
 
         for vote in votes:
@@ -471,23 +477,44 @@ class BaseMultiAgentEnvGroupBuilder(EnvGroupBuilder, ABC):
                 # Build normalized key and determine judge's vote
                 if (agent_a, step_a) < (agent_b, step_b):
                     key = (agent_a, step_a, agent_b, step_b)
-                    judge_vote = +1 if op == ">" else -1
+                    if op == ">":
+                        judge_vote = +1
+                    elif op == "<":
+                        judge_vote = -1
+                    elif op == "=":
+                        judge_vote = 0  # Tie vote
+                    else:
+                        continue
                 else:
                     key = (agent_b, step_b, agent_a, step_a)
-                    judge_vote = -1 if op == ">" else +1
+                    if op == ">":
+                        judge_vote = -1
+                    elif op == "<":
+                        judge_vote = +1
+                    elif op == "=":
+                        judge_vote = 0  # Tie vote (order doesn't matter for ties)
+                    else:
+                        continue
 
                 ground_truth = consensus.get(key)
 
                 if ground_truth is None:
-                    # Tie: R_judge = 0, don't count toward average
-                    continue
-
-                # Alignment reward: +1 if aligned, -1 if not
-                if judge_vote == ground_truth:
-                    judge_reward_sums[source_agent][source_step] += 1.0
+                    # Consensus is a tie
+                    # Reward judges who voted tie (0), penalize those who didn't
+                    if judge_vote == 0:
+                        judge_reward_sums[source_agent][source_step] += 1.0
+                    else:
+                        judge_reward_sums[source_agent][source_step] -= 1.0
+                    judge_counts[source_agent][source_step] += 1
                 else:
-                    judge_reward_sums[source_agent][source_step] -= 1.0
-                judge_counts[source_agent][source_step] += 1
+                    # Consensus is clear (+1 or -1)
+                    # Alignment reward: +1 if aligned, -1 if not
+                    # If judge voted tie (0) but consensus is clear, they get -1
+                    if judge_vote == ground_truth:
+                        judge_reward_sums[source_agent][source_step] += 1.0
+                    else:
+                        judge_reward_sums[source_agent][source_step] -= 1.0
+                    judge_counts[source_agent][source_step] += 1
 
         missing_comparisons = 0
         if self.enable_format_penalty:
