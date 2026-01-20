@@ -48,6 +48,8 @@ class Transition:
     """Immediate reward received after taking the action."""
     episode_done: bool
     """Whether this transition ended the episode."""
+    token_rewards: list[float] | None = None
+    """Optional per-token rewards for action tokens in this transition."""
     metrics: Metrics = field(default_factory=dict)
     """Numeric values aggregated and reported in training logs."""
     logs: Logs = field(default_factory=dict)

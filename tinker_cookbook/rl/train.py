@@ -25,9 +25,11 @@ from tinker_cookbook.rl.data_processing import (
     assemble_training_data,
     assemble_training_data_dual_advantage,
     assemble_training_data_stepwise,
+    assemble_training_data_tokenwise,
     compute_advantages,
     compute_stepwise_advantages,
     has_dual_rewards,
+    has_token_rewards,
     normalize_rewards_separately,
     remove_constant_reward_groups,
 )
@@ -135,7 +137,9 @@ def print_group(
         )
 
     rewards = traj_group.get_total_rewards()
-    if use_stepwise_advantages:
+    if has_token_rewards([traj_group]):
+        data_D, metadata_D = assemble_training_data_tokenwise([traj_group])
+    elif use_stepwise_advantages:
         advantages_P_G_S = compute_stepwise_advantages([traj_group])
         data_D, metadata_D = assemble_training_data_stepwise([traj_group], advantages_P_G_S)
     else:
@@ -853,7 +857,8 @@ async def prepare_minibatch(
                 lambda_gen=lambda_gen,
                 lambda_judge=lambda_judge,
             )
-            metrics["v2/using_dual_advantages"] = 1.0
+        elif has_token_rewards(trajectory_groups_P):
+            data_D, _metadata_D = assemble_training_data_tokenwise(trajectory_groups_P)
         elif use_stepwise_advantages:
             # Per-step advantages for multi-step environments (e.g., multi-agent debate)
             advantages_P_G_S = compute_stepwise_advantages(trajectory_groups_P)

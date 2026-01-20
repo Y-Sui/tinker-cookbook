@@ -324,6 +324,95 @@ def trajectory_to_data_stepwise(
     return data
 
 
+def trajectory_to_data_tokenwise(
+    traj: Trajectory, token_advantages_S: List[List[float]]
+) -> list[tinker.Datum]:
+    """
+    Return one or more Datum objects corresponding to the trajectory, with
+    per-token advantages for each step.
+
+    Args:
+        traj: Trajectory with multiple transitions (steps).
+        token_advantages_S: Per-step token advantages, where
+            token_advantages_S[s][t] corresponds to the advantage for token t
+            in step s's action tokens.
+    """
+    assert len(token_advantages_S) == len(traj.transitions), (
+        f"token_advantages_S length ({len(token_advantages_S)}) must match "
+        f"number of transitions ({len(traj.transitions)})"
+    )
+
+    class SequenceAccumulator:
+        full_sequence: list[FlatObElem] = []
+        sampled_logprobs: list[float] = []
+        advantages: list[float] = []
+        mask: list[float] = []
+
+        @classmethod
+        def clear(cls):
+            cls.full_sequence = []
+            cls.sampled_logprobs = []
+            cls.advantages = []
+            cls.mask = []
+
+    def make_datum_from_state():
+        all_tokens_T = _flat_ob_to_model_input(SequenceAccumulator.full_sequence)
+        input_tokens_T, target_tokens_T = create_rightshifted_model_input_and_leftshifted_targets(
+            list(all_tokens_T.chunks)
+        )
+        sampled_logprobs_T = SequenceAccumulator.sampled_logprobs[1:]
+        advantages_T = SequenceAccumulator.advantages[1:]
+        mask_T = SequenceAccumulator.mask[1:]
+        assert (
+            input_tokens_T.length
+            == len(target_tokens_T)
+            == len(sampled_logprobs_T)
+            == len(advantages_T)
+            == len(mask_T)
+        )
+        return tinker.Datum(
+            model_input=input_tokens_T,
+            loss_fn_inputs={
+                "target_tokens": TensorData.from_torch(torch.tensor(target_tokens_T)),
+                "logprobs": TensorData.from_torch(torch.tensor(sampled_logprobs_T)),
+                "advantages": TensorData.from_torch(torch.tensor(advantages_T)),
+                "mask": TensorData.from_torch(torch.tensor(mask_T)),
+            },
+        )
+
+    data: list[tinker.Datum] = []
+    for step_idx, transition in enumerate(traj.transitions):
+        ob = transition.ob
+        ob_flat = _flatten_chunks(ob.chunks)
+        ac_with_logprobs = transition.ac
+        token_advantages = token_advantages_S[step_idx]
+        assert len(token_advantages) == len(ac_with_logprobs.tokens), (
+            f"token_advantages length ({len(token_advantages)}) must match "
+            f"number of action tokens ({len(ac_with_logprobs.tokens)})"
+        )
+        if len(SequenceAccumulator.full_sequence) == 0:
+            delta_ob_flat = ob_flat
+        elif _is_prefix(SequenceAccumulator.full_sequence, ob_flat):
+            delta_ob_flat = ob_flat[len(SequenceAccumulator.full_sequence) :]
+        else:
+            data.append(make_datum_from_state())
+            SequenceAccumulator.clear()
+            delta_ob_flat = ob_flat
+        delta_ob_len = _flat_ob_token_len(delta_ob_flat)
+        SequenceAccumulator.full_sequence.extend(delta_ob_flat)
+        SequenceAccumulator.full_sequence.extend(ac_with_logprobs.tokens)
+        SequenceAccumulator.sampled_logprobs.extend(
+            [0.0] * delta_ob_len + ac_with_logprobs.logprobs
+        )
+        SequenceAccumulator.advantages.extend([0.0] * delta_ob_len + token_advantages)
+        SequenceAccumulator.mask.extend([0.0] * delta_ob_len + [1.0] * len(ac_with_logprobs.tokens))
+
+    if SequenceAccumulator.full_sequence:
+        data.append(make_datum_from_state())
+
+    return data
+
+
 def assemble_training_data(
     trajectory_groups_P: List[TrajectoryGroup],
     advantages_P: List[torch.Tensor],
@@ -381,6 +470,51 @@ def assemble_training_data_stepwise(
     return data_D, metadata_D
 
 
+def assemble_training_data_tokenwise(
+    trajectory_groups_P: List[TrajectoryGroup],
+) -> tuple[List[tinker.Datum], List[dict[str, int]]]:
+    """Convert trajectories to training data format with per-token advantages.
+
+    If a transition includes token_rewards, those are used; otherwise, the
+    transition's scalar reward is applied uniformly to all action tokens.
+    Token rewards are centered within each group to form advantages.
+    """
+    data_D: list[tinker.Datum] = []
+    metadata_D: list[dict[str, int]] = []
+
+    for i_group, traj_group in enumerate(trajectory_groups_P):
+        all_token_rewards: list[float] = []
+        for traj in traj_group.trajectories_G:
+            for transition in traj.transitions:
+                token_rewards = transition.token_rewards
+                if token_rewards is None:
+                    token_rewards = [transition.reward] * len(transition.ac.tokens)
+                all_token_rewards.extend(token_rewards)
+
+        if all_token_rewards:
+            mean_reward = sum(all_token_rewards) / len(all_token_rewards)
+        else:
+            mean_reward = 0.0
+
+        for i_traj, traj in enumerate(traj_group.trajectories_G):
+            token_advantages_S: list[list[float]] = []
+            for transition in traj.transitions:
+                token_rewards = transition.token_rewards
+                if token_rewards is None:
+                    token_rewards = [transition.reward] * len(transition.ac.tokens)
+                assert len(token_rewards) == len(transition.ac.tokens), (
+                    f"token_rewards length ({len(token_rewards)}) must match "
+                    f"number of action tokens ({len(transition.ac.tokens)})"
+                )
+                token_advantages_S.append([r - mean_reward for r in token_rewards])
+
+            new_data = trajectory_to_data_tokenwise(traj, token_advantages_S)
+            data_D.extend(new_data)
+            metadata_D.extend([dict(group_idx=i_group, traj_idx=i_traj) for _ in new_data])
+
+    return data_D, metadata_D
+
+
 def remove_constant_reward_groups(
     trajectory_groups_P: List[TrajectoryGroup],
 ) -> List[TrajectoryGroup]:
@@ -413,6 +547,16 @@ def has_dual_rewards(trajectory_groups_P: List[TrajectoryGroup]) -> bool:
         for traj in traj_group.trajectories_G:
             if hasattr(traj, "gen_rewards") and hasattr(traj, "judge_rewards"):
                 return True
+    return False
+
+
+def has_token_rewards(trajectory_groups_P: List[TrajectoryGroup]) -> bool:
+    """Check if any trajectory includes per-token rewards for action tokens."""
+    for traj_group in trajectory_groups_P:
+        for traj in traj_group.trajectories_G:
+            for transition in traj.transitions:
+                if transition.token_rewards is not None:
+                    return True
     return False
 
 
