@@ -2,7 +2,7 @@
 CANT environment for verifiable tasks (math problems, coding challenges, etc.).
 
 This variant is similar to the base CANT environment but can optionally use ground truth
-answers for additional reward signals or evaluation.
+answers for evaluation.
 """
 
 from dataclasses import dataclass, field
@@ -103,13 +103,13 @@ class VerifiableCANTEnvGroupBuilder(CANTEnvGroupBuilder):
         Returns:
             List of (final_reward, metrics) tuples
         """
+        coordinator = env_group[0].coordinator
+        answer = coordinator.answer
+        dataset_name = self.problem_state.get("dataset_name")
         # Use base implementation (pure peer evaluation)
         metrics_list = await super().compute_group_rewards(trajectory_group, env_group)
 
-        coordinator = env_group[0].coordinator
-        answer = coordinator.answer
         if answer is not None:
-            dataset_name = self.problem_state.get("dataset_name")
             per_agent_metrics = compute_verifiable_metrics(
                 coordinator=coordinator,
                 answer=answer,

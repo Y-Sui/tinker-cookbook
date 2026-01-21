@@ -1,11 +1,9 @@
 """
-Training script for CANT (Critique and Revision) framework.
+Training script for the CANT ground-truth baseline.
 
-Supports both verifiable and non-verifiable tasks with four-round protocol:
-1. Proposal: Generate initial solutions
-2. Critique: Provide blind rankings and targeted critiques
-3. Revision: Revise solutions
-4. Final Verdict: Rank revised solutions
+Modes:
+- single_turn: one agent, one round, reward from ground-truth correctness
+- multi_round: full CANT protocol, reward from revised solutions' correctness
 """
 
 import asyncio
@@ -18,8 +16,9 @@ from dotenv import load_dotenv
 
 from tinker_cookbook import model_info
 from tinker_cookbook.recipes.cant import loader
-from tinker_cookbook.recipes.cant.env import CANTEnvGroupBuilder
-from tinker_cookbook.recipes.cant.verifiable_env import VerifiableCANTEnvGroupBuilder
+from tinker_cookbook.recipes.cant_baseline.verifiable_env import (
+    BaselineVerifiableCANTEnvGroupBuilder,
+)
 from tinker_cookbook.renderers import get_renderer
 from tinker_cookbook.rl import train
 from tinker_cookbook.rl.types import RLDataset, RLDatasetBuilder
@@ -29,8 +28,8 @@ load_dotenv(override=True)
 
 
 @chz.chz
-class CANTConfig:
-    """Configuration for CANT training."""
+class CANTBaselineConfig:
+    """Configuration for the CANT ground-truth baseline."""
 
     # ============================================================================
     # Model Configuration
@@ -42,41 +41,35 @@ class CANTConfig:
     # ============================================================================
     # Environment Configuration
     # ============================================================================
-    env_type: Literal["verifiable", "non-verifiable"] = "verifiable"
-    num_agents: int = 4  # Number of agents in CANT protocol
+    env_type: Literal["verifiable"] = "verifiable"
+    num_agents: int = 4
+    ground_truth_mode: Literal["single_turn", "multi_round"] = "multi_round"
+
     # ============================================================================
     # Training Configuration
     # ============================================================================
-    batch_size: int = 16  # Problems per training batch
-    num_train_datapoints: int = 1024  # Training samples per epoch
-    epoch: int = 1  # Number of epochs
+    batch_size: int = 16
+    num_train_datapoints: int = 1024
+    epoch: int = 1
     learning_rate: float = 3e-5
     use_cosine_lr_schedule: bool = False
-    eval_every: int = 0  # 0 = disable evaluation
-    num_test_datapoints: int = -1  # <0 = use all test datapoints
-    save_every: int = 20  # 0 = disable checkpointing
+    eval_every: int = 0
+    num_test_datapoints: int = -1
+    save_every: int = 20
 
-    # ============================================================================
-    # CANT Reward Hyperparameters
-    # ============================================================================
-    beta_disc: float = 2.0  # Persuasion reward scaling factor
-    weight_disc: float = 2.0  # Weight for persuasion component
-    weight_sol: float = 1.0  # Weight for solution quality component
-    weight_meta: float = 1.0  # Weight for consensus component
-    weight_accept: float = 0.5  # Weight for acceptance component
     # ============================================================================
     # Dataset Configuration
     # ============================================================================
-    train_datasets: str | None = "aime2024"  # Comma-separated dataset names
-    test_datasets: str | None = None  # Comma-separated dataset names (defaults to train)
-    max_questions: int = -1  # Max problems to load (-1 = all)
-    max_test_questions: int = -1  # Max test problems to load (-1 = all)
+    train_datasets: str | None = "aime2024"
+    test_datasets: str | None = None
+    max_questions: int = -1
+    max_test_questions: int = -1
 
     # ============================================================================
     # Logging Configuration
     # ============================================================================
-    num_groups_to_log: int = 4  # Groups to log per batch
-    log_path: str | None = None  # Custom log path (auto-generated if None)
+    num_groups_to_log: int = 4
+    log_path: str | None = None
 
     # ============================================================================
     # Weights & Biases Configuration
@@ -85,15 +78,15 @@ class CANTConfig:
     wandb_name: str | None = None
 
 
-class CANTDataset(RLDataset):
-    """Dataset wrapper that instantiates CANT env groups per problem."""
+class CANTBaselineDataset(RLDataset):
+    """Dataset wrapper that instantiates baseline env groups per problem."""
 
     def __init__(
         self,
         batch_size: int,
         problem_states: list[dict],
         num_datapoints: int,
-        env_group_builder_cls: type[CANTEnvGroupBuilder],
+        env_group_builder_cls: type[BaselineVerifiableCANTEnvGroupBuilder],
         env_group_builder_kwargs: dict[str, object],
     ):
         self.batch_size = batch_size
@@ -102,7 +95,7 @@ class CANTDataset(RLDataset):
         self.env_group_builder_cls = env_group_builder_cls
         self.env_group_builder_kwargs = env_group_builder_kwargs
 
-    def get_batch(self, index: int) -> list[CANTEnvGroupBuilder]:
+    def get_batch(self, index: int) -> list[BaselineVerifiableCANTEnvGroupBuilder]:
         batch_start = index * self.batch_size
         batch_end = min((index + 1) * self.batch_size, self.num_datapoints)
         assert batch_start < batch_end, "Incorrect batch size"
@@ -120,28 +113,24 @@ class CANTDataset(RLDataset):
 
 
 @chz.chz
-class CANTDatasetBuilder(RLDatasetBuilder):
-    """Builds a CANT dataset from problem states and env config."""
+class CANTBaselineDatasetBuilder(RLDatasetBuilder):
+    """Builds a baseline dataset from problem states and env config."""
 
     batch_size: int
     num_train_datapoints: int
     epoch: int
     problem_states: list[dict]
-    num_test_datapoints: int = -1
-    test_problem_states: list[dict] | None = None
-    env_group_builder_cls: type[CANTEnvGroupBuilder]
+    env_group_builder_cls: type[BaselineVerifiableCANTEnvGroupBuilder]
     model_name: str
     renderer_name: str
     num_agents: int
-    beta_disc: float
-    weight_disc: float
-    weight_sol: float
-    weight_meta: float
-    weight_accept: float
+    ground_truth_mode: Literal["single_turn", "multi_round"]
+    num_test_datapoints: int = -1
+    test_problem_states: list[dict] | None = None
 
     async def __call__(self) -> tuple[RLDataset, RLDataset | None]:
         if not self.problem_states:
-            raise ValueError("No problem states available for CANT dataset")
+            raise ValueError("No problem states available for baseline dataset")
 
         tokenizer = get_tokenizer(self.model_name)
         renderer = get_renderer(self.renderer_name, tokenizer)
@@ -149,18 +138,15 @@ class CANTDatasetBuilder(RLDatasetBuilder):
             "num_agents": self.num_agents,
             "renderer": renderer,
             "model_name": self.model_name,
-            "beta_disc": self.beta_disc,
-            "weight_disc": self.weight_disc,
-            "weight_sol": self.weight_sol,
-            "weight_meta": self.weight_meta,
-            "weight_accept": self.weight_accept,
+            "ground_truth_mode": self.ground_truth_mode,
         }
+
         if self.num_train_datapoints < 0 or self.num_train_datapoints > len(self.problem_states):
             num_datapoints = len(self.problem_states) * self.epoch
         else:
             num_datapoints = self.num_train_datapoints * self.epoch
 
-        train_dataset = CANTDataset(
+        train_dataset = CANTBaselineDataset(
             batch_size=self.batch_size,
             problem_states=self.problem_states,
             num_datapoints=num_datapoints,
@@ -176,7 +162,7 @@ class CANTDatasetBuilder(RLDatasetBuilder):
         else:
             test_size = min(self.num_test_datapoints, len(test_states))
         test_batch_size = min(self.batch_size, test_size)
-        test_dataset = CANTDataset(
+        test_dataset = CANTBaselineDataset(
             batch_size=test_batch_size,
             problem_states=test_states[:test_size],
             num_datapoints=test_size,
@@ -187,96 +173,59 @@ class CANTDatasetBuilder(RLDatasetBuilder):
 
 
 def build_dataset_builder(
-    config: CANTConfig, model_name: str, renderer_name: str
+    config: CANTBaselineConfig, model_name: str, renderer_name: str
 ) -> RLDatasetBuilder:
-    """
-    Build appropriate dataset builder based on environment type.
-
-    Args:
-        config: Training configuration
-        model_name: Model identifier
-        renderer_name: Renderer identifier
-
-    Returns:
-        RLDatasetBuilder instance
-    """
     train_datasets = loader.parse_dataset_list(config.train_datasets)
     if not train_datasets:
         raise ValueError("train_datasets must be set to at least one dataset name")
     test_datasets = loader.parse_dataset_list(config.test_datasets) or train_datasets
 
-    if config.env_type == "verifiable":
-        problem_states = loader.load_verifiable_dataset_states(
-            train_datasets,
-            split="train",
-            max_count=config.max_questions,
-        )
-        test_problem_states = loader.load_verifiable_dataset_states(
-            test_datasets,
-            split="test",
-            max_count=config.max_test_questions,
-        )
+    if config.env_type != "verifiable":
+        raise ValueError("Baseline training only supports env_type='verifiable'")
 
-        env_group_builder_cls = VerifiableCANTEnvGroupBuilder
+    problem_states = loader.load_verifiable_dataset_states(
+        train_datasets,
+        split="train",
+        max_count=config.max_questions,
+    )
+    test_problem_states = loader.load_verifiable_dataset_states(
+        test_datasets,
+        split="test",
+        max_count=config.max_test_questions,
+    )
 
-    else:  # non-verifiable
-        problem_states = []
-        for name in train_datasets:
-            problem_states.extend(
-                loader.load_non_verifiable_dataset_states(name, config.max_questions)
-            )
-        test_problem_states = []
-        for name in test_datasets:
-            test_problem_states.extend(
-                loader.load_non_verifiable_dataset_states(name, config.max_test_questions)
-            )
-
-        env_group_builder_cls = CANTEnvGroupBuilder
-
-    dataset_builder = CANTDatasetBuilder(
+    return CANTBaselineDatasetBuilder(
         batch_size=config.batch_size,
         num_train_datapoints=config.num_train_datapoints,
         epoch=config.epoch,
         problem_states=problem_states,
         num_test_datapoints=config.num_test_datapoints,
         test_problem_states=test_problem_states,
-        env_group_builder_cls=env_group_builder_cls,
+        env_group_builder_cls=BaselineVerifiableCANTEnvGroupBuilder,
         model_name=model_name,
         renderer_name=renderer_name,
         num_agents=config.num_agents,
-        beta_disc=config.beta_disc,
-        weight_disc=config.weight_disc,
-        weight_sol=config.weight_sol,
-        weight_meta=config.weight_meta,
-        weight_accept=config.weight_accept,
+        ground_truth_mode=config.ground_truth_mode,
     )
 
-    return dataset_builder
 
-
-def get_run_name(config: CANTConfig, model_name: str) -> str:
-    """Generate descriptive run name for logging."""
+def get_run_name(config: CANTBaselineConfig, model_name: str) -> str:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     model_short = model_name.split("/")[-1]
-    env_short = "v" if config.env_type == "verifiable" else "nv"
-    return f"cant_{env_short}_{model_short}_a{config.num_agents}_{timestamp}"
+    mode = "single" if config.ground_truth_mode == "single_turn" else "multi"
+    return f"cant_baseline_{mode}_{model_short}_a{config.num_agents}_{timestamp}"
 
 
-async def main():
-    """Main training entry point."""
-    config = chz.entrypoint(CANTConfig)
+async def main() -> None:
+    config = chz.entrypoint(CANTBaselineConfig)
 
-    # Resolve model/renderer names
     model_name = config.model_name
     renderer_name = config.renderer_name or model_info.get_recommended_renderer_name(model_name)
 
-    # Build dataset
     dataset_builder = build_dataset_builder(config, model_name, renderer_name)
 
-    # Generate run name
     run_name = config.wandb_name or get_run_name(config, model_name)
 
-    # Determine log path
     if config.log_path:
         log_path = Path(config.log_path)
         log_path.mkdir(parents=True, exist_ok=True)
@@ -284,35 +233,30 @@ async def main():
     else:
         log_path = f"~/tinker/multi-agent-debate/{run_name}"
 
-    print("Starting CANT training:")
+    train_datasets = loader.parse_dataset_list(config.train_datasets)
+    test_datasets = loader.parse_dataset_list(config.test_datasets) or train_datasets
+
+    print("Starting CANT baseline training:")
     print(f"  Model: {model_name}")
     print(f"  Renderer: {renderer_name}")
-    print(f"  Environment: {config.env_type}")
+    print(f"  Ground truth mode: {config.ground_truth_mode}")
     print(f"  Num agents: {config.num_agents}")
     print(f"  Batch size: {config.batch_size}")
     print(f"  Training datapoints: {config.num_train_datapoints}")
     print(f"  Epochs: {config.epoch}")
     print(f"  Learning rate: {config.learning_rate}")
-    train_datasets = loader.parse_dataset_list(config.train_datasets)
-    test_datasets = loader.parse_dataset_list(config.test_datasets) or train_datasets
     print(f"  Train datasets: {', '.join(train_datasets)}")
     print(f"  Test datasets: {', '.join(test_datasets)}")
-    print(
-        f"  Reward weights: disc={config.weight_disc}, sol={config.weight_sol}, "
-        f"meta={config.weight_meta}, accept={config.weight_accept}"
-    )
-    print(f"  Beta (persuasion): {config.beta_disc}")
     print(f"  Log path: {log_path}")
     print()
 
-    # Build training config
     train_config = train.Config(
         model_name=model_name,
         dataset_builder=dataset_builder,
         learning_rate=config.learning_rate,
         use_cosine_lr_schedule=config.use_cosine_lr_schedule,
         max_tokens=config.max_tokens,
-        use_stepwise_advantages=True,  # CANT uses stepwise advantages
+        use_stepwise_advantages=False,
         num_groups_to_log=config.num_groups_to_log,
         wandb_project=config.wandb_project,
         wandb_name=run_name,
@@ -321,7 +265,6 @@ async def main():
         save_every=config.save_every,
     )
 
-    # Start training
     await train.main(train_config)
 
 

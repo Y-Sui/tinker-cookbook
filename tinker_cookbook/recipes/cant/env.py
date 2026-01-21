@@ -2,26 +2,16 @@
 CANT environment for non-verifiable tasks (general Q&A, creative writing, etc.).
 """
 
-import numpy as np
-from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Sequence
 
+import numpy as np
 from tinker import types
 
 from tinker_cookbook.completers import StopCondition as StopConditionType
-from tinker_cookbook.renderers import Message, Renderer, get_text_content
-from tinker_cookbook.rl.types import (
-    Action,
-    Env,
-    EnvGroupBuilder,
-    Observation,
-    StepResult,
-    Trajectory,
-)
-
 from tinker_cookbook.recipes.cant.coordinator import CANTCoordinator
 from tinker_cookbook.recipes.cant.prompts import (
+    get_default_agent_personas,
     get_round1_system_prompt,
     get_round2_system_prompt,
     get_round3_system_prompt,
@@ -30,7 +20,15 @@ from tinker_cookbook.recipes.cant.prompts import (
     get_user_message_round2,
     get_user_message_round3,
     get_user_message_round4,
-    get_default_agent_personas,
+)
+from tinker_cookbook.renderers import Message, Renderer, get_text_content
+from tinker_cookbook.rl.types import (
+    Action,
+    Env,
+    EnvGroupBuilder,
+    Observation,
+    StepResult,
+    Trajectory,
 )
 
 # Stop condition for CANT (empty list means use default EOS)
@@ -77,8 +75,7 @@ class CANTEnv(Env):
         elif current_round == 1:
             system_prompt = get_round2_system_prompt(self.persona)
             user_message = get_user_message_round2(
-                self.coordinator.question,
-                self.coordinator.get_initial_solutions()
+                self.coordinator.question, self.coordinator.get_initial_solutions()
             )
 
         elif current_round == 2:
@@ -87,7 +84,7 @@ class CANTEnv(Env):
                 self.coordinator.question,
                 self.coordinator.get_initial_solutions(),
                 self.agent_id,
-                self.coordinator.critique_texts
+                self.coordinator.critique_texts,
             )
 
         elif current_round == 3:
@@ -394,9 +391,7 @@ class CANTEnvGroupBuilder(EnvGroupBuilder):
             return None
         return rewards
 
-    def _get_token_offsets(
-        self, tokens: list[int]
-    ) -> tuple[list[tuple[int, int]], str] | None:
+    def _get_token_offsets(self, tokens: list[int]) -> tuple[list[tuple[int, int]], str] | None:
         tokenizer = getattr(self.renderer, "tokenizer", None)
         if tokenizer is None:
             return None

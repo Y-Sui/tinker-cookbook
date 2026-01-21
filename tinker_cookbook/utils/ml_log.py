@@ -13,6 +13,7 @@ from typing import Any, Dict, List
 import chz
 from rich.console import Console
 from rich.table import Table
+
 from tinker_cookbook.utils.code_state import code_state
 
 logger = logging.getLogger(__name__)
