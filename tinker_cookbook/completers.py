@@ -6,6 +6,7 @@ The TokenCompleter operates on tokens. This is the version used by RL algorithms
 Evals and other code should use the appropriate interface.
 """
 
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeAlias
 
@@ -15,6 +16,8 @@ from tinker_cookbook import renderers
 
 if TYPE_CHECKING:
     from openai import AsyncOpenAI
+
+logger = logging.getLogger(__name__)
 
 # Interfaces
 
@@ -187,4 +190,9 @@ class OpenRouterMessageCompleter(MessageCompleter):
             temperature=self.temperature,
         )
 
-        return {"role": "assistant", "content": response.choices[0].message.content or ""}
+        content = ""
+        if response.choices and response.choices[0].message:
+            content = response.choices[0].message.content or ""
+        else:
+            logger.warning("OpenRouter returned empty choices for model %s", self.model_name)
+        return {"role": "assistant", "content": content}
