@@ -4,10 +4,11 @@ python -m tinker_cookbook.recipes.cant.train \
     max_tokens=8096 \
     env_type="verifiable" \
     num_agents=4 \
-    batch_size=16 \
-    epoch=30 \
-    verifiable_dataset_path="tinker_cookbook/data/aime2024_sample.jsonl" \
-    verifiable_problem_field="query" \
-    verifiable_answer_field="answer" \
+    batch_size=64 \
+    epoch=1 \
+    eval_every=20 \
+    save_every=20 \
+    train_datasets=math \
+    test_datasets=aime2024,aime2025,math500 \
     wandb_project="CANT-01-20" \
-    wandb_name="Updated-Qwen3-8B-disable-thinking-aime2024-new"
+    wandb_name="Qwen3-8B-disable-thinking-train-on-math"

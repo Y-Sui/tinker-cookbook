@@ -25,7 +25,6 @@ from tinker_cookbook.rl import train
 from tinker_cookbook.rl.types import RLDataset, RLDatasetBuilder
 from tinker_cookbook.tokenizer_utils import get_tokenizer
 
-
 load_dotenv(override=True)
 
 
@@ -55,6 +54,7 @@ class CANTConfig:
     use_cosine_lr_schedule: bool = False
     eval_every: int = 0  # 0 = disable evaluation
     num_test_datapoints: int = -1  # <0 = use all test datapoints
+    save_every: int = 20  # 0 = disable checkpointing
 
     # ============================================================================
     # CANT Reward Hyperparameters
@@ -320,6 +320,7 @@ async def main():
         wandb_name=run_name,
         log_path=log_path,
         eval_every=config.eval_every,
+        save_every=config.save_every,
     )
 
     # Start training

@@ -97,15 +97,32 @@ def _load_math_problems_from_jsonl(
             if i >= max_count and max_count > 0:
                 break
             data = _load_jsonl_line(line)
-            if problem_field not in data or answer_field not in data:
+            if problem_field in data:
+                problem = data[problem_field]
+            elif "query" in data:
+                problem = data["query"]
+            else:
                 raise ValueError(
-                    f"Each JSONL row must include '{problem_field}' and '{answer_field}'. "
+                    f"Each JSONL row must include '{problem_field}' (or 'query'). "
+                    f"Got keys={list(data.keys())}"
+                )
+            if answer_field in data:
+                answer = data[answer_field]
+            elif "answer" in data:
+                answer = data["answer"]
+            elif "final_answer" in data:
+                answer = data["final_answer"]
+            elif "solution" in data:
+                answer = data["solution"]
+            else:
+                raise ValueError(
+                    f"Each JSONL row must include '{answer_field}' (or answer fields). "
                     f"Got keys={list(data.keys())}"
                 )
             problems.append(
                 {
-                    "question": str(data[problem_field]),
-                    "answer": str(data[answer_field]),
+                    "question": str(problem),
+                    "answer": str(answer),
                     "dataset_name": dataset_name,
                 }
             )

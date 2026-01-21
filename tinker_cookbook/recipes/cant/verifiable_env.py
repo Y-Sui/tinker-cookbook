@@ -8,11 +8,11 @@ answers for additional reward signals or evaluation.
 from dataclasses import dataclass, field
 from typing import Sequence
 
-from tinker_cookbook.rl.types import Env, Trajectory
-
-from tinker_cookbook.recipes.cant.env import CANTEnv, CANTEnvGroupBuilder
 from tinker_cookbook.recipes.cant.coordinator import CANTCoordinator
+from tinker_cookbook.recipes.cant.env import CANTEnv, CANTEnvGroupBuilder
 from tinker_cookbook.recipes.cant.metrics import compute_verifiable_metrics
+from tinker_cookbook.recipes.cant.prompts import get_default_agent_personas
+from tinker_cookbook.rl.types import Env, Trajectory
 
 
 @dataclass
@@ -71,13 +71,14 @@ class VerifiableCANTEnvGroupBuilder(CANTEnvGroupBuilder):
         )
 
         # Create one environment per agent
+        personas = self.personas or get_default_agent_personas()
         envs = []
         for agent_id in range(self.num_agents):
             env = VerifiableCANTEnv(
                 agent_id=agent_id,
                 coordinator=coordinator,
                 renderer=self.renderer,
-                persona=self.persona,
+                persona=personas[agent_id % len(personas)],
                 max_response_tokens=self.max_response_tokens,
             )
             envs.append(env)
