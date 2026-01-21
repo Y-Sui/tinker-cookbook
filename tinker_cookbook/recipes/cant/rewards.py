@@ -209,7 +209,7 @@ def compute_all_rewards(
     Args:
         critiques: Dict mapping {author_id: [target_ids]}
         blind_rankings: Dict mapping {author_id: [(a, op, b), ...]} for Round 2
-        final_rankings: Dict mapping {author_id: [(a, op, b), ...]} for Round 3
+        final_rankings: Dict mapping {author_id: [(a, op, b), ...]} for Round 4
         num_agents: Total number of agents
         beta_disc: Scaling factor for persuasion rewards
         bonus_accept: Bonus value for improvement

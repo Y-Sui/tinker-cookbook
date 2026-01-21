@@ -4,6 +4,7 @@ Bradley-Terry model for computing skill parameters from pairwise comparisons.
 Uses the choix library for efficient inference via Iterative Luce Spectral Ranking (ILSR).
 """
 
+import logging
 import numpy as np
 from typing import Sequence
 
@@ -14,6 +15,8 @@ except ImportError:
         "choix library is required for Bradley-Terry scoring. "
         "Install it with: pip install choix"
     )
+
+logger = logging.getLogger(__name__)
 
 
 def compute_bradley_terry_scores(
@@ -42,20 +45,30 @@ def compute_bradley_terry_scores(
         # No comparisons available - return neutral scores
         return np.full(num_agents, 0.5, dtype=np.float32)
 
-    # Validate comparison indices
+    # Validate comparison indices, skip invalid rows
+    valid_comparisons: list[tuple[int, int]] = []
+    invalid_count = 0
     for winner, loser in comparisons:
+        if winner == loser:
+            invalid_count += 1
+            continue
         if not (0 <= winner < num_agents and 0 <= loser < num_agents):
-            raise ValueError(
-                f"Invalid comparison ({winner}, {loser}): "
-                f"indices must be in range [0, {num_agents})"
-            )
+            invalid_count += 1
+            continue
+        valid_comparisons.append((winner, loser))
+    if invalid_count:
+        logger.warning(
+            "Skipping %s invalid comparisons (num_agents=%s)", invalid_count, num_agents
+        )
+    if not valid_comparisons:
+        return np.full(num_agents, 0.5, dtype=np.float32)
 
     try:
         # Use choix's ILSR algorithm for maximum likelihood estimation
         # Returns log-skill parameters (unbounded)
         params = choix.ilsr_pairwise(
             n_items=num_agents,
-            data=list(comparisons),
+            data=list(valid_comparisons),
             alpha=alpha,
         )
     except Exception as e:

@@ -8,7 +8,7 @@ Here is the comprehensive, rigorous description of the **CANT (Self-Evolution)**
 ## 1. Problem Definition & Interaction Protocol
 We define a training trajectory $\tau$ involving $N$ agents (e.g., $N=4$) sharing the same policy parameter $\pi_\theta$. Each agent $i$ is assigned a unique **Persona** $P_i$ (e.g., "Skeptic", "Constructive", "Analyst") to enforce diverse initial viewpoints.
 
-The interaction for a single query $q$ is strictly divided into three computational rounds to isolate the causal impact of the critique.
+The interaction for a single query $q$ is strictly divided into four computational rounds to isolate the causal impact of the critique.
 
 ### Round 1: Proposal (Initialization)
 *   **State ($s_1$):** User Query $q$ + Agent Persona $P_i$.
@@ -24,11 +24,15 @@ The interaction for a single query $q$ is strictly divided into three computatio
         *   *Format:* Must use XML tags: `<target>Agent k</target>` followed by the critique text $C_{i \to k}$.
         *   *Content:* Identification of logical fallacies, factual errors, or missing constraints.
 
-### Round 3: Revision & Final Verdict (The Outcome)
+### Round 3: Revision (The Outcome)
 *   **State ($s_3$):** Query $q$ + All Initial Solutions $\{S^{init}\}$ + All Critiques $\{C_{0 \to \cdot}, ..., C_{N-1 \to \cdot}\}$.
 *   **Action ($a_3$):** Each Agent $i$ generates:
     1.  **Segment D (Revision):** A **Revised Solution** $S_i^{rev}$ that incorporates valid feedback or defends against invalid critiques.
-    2.  **Segment E (Final Ranking):** A re-evaluation of all peers' *revised* solutions.
+
+### Round 4: Final Verdict (The Outcome)
+*   **State ($s_4$):** Query $q$ + All Revised Solutions $\{S^{rev}\}$.
+*   **Action ($a_4$):** Each Agent $i$ generates:
+    1.  **Segment E (Final Ranking):** A re-evaluation of all peers' *revised* solutions.
 
 ---
 
@@ -40,7 +44,7 @@ To calculate rewards, we must quantify the "Group Consensus Value" of each agent
 Let $w_{j \to k}^t \in \{0, 1\}$ be the binary outcome of a pairwise comparison where Agent $j$ judges Agent $k$ at time step $t$.
 *   $w_{j \to k}^t = 1$ if Agent $j$ ranks $k$ higher than a specific opponent (or higher than the median).
 *   $t=0$: Blind Ranking (Round 2).
-*   $t=final$: Final Ranking (Round 3).
+*   $t=final$: Final Ranking (Round 4).
 
 **2.2. Win Rate (The Score)**
 We define the **Score** of Agent $k$ as judged by Agent $j$ as their normalized win fraction:
@@ -105,7 +109,7 @@ We use **Token-Level Masking** in the PPO Loss function. This ensures that the "
 | **Segment B** | **Round 2:** Blind Ranking Tokens | **0 (Masked)** <br> *Reason: Prevents reward hacking on initial bias.* |
 | **Segment C** | **Round 2:** Critique Tokens ($C_{i \to k}$) | **$w_3 r_{disc}$** <br> *Reason: Specifically reinforces effective argumentation.* |
 | **Segment D** | **Round 3:** Revised Solution Tokens ($S^{rev}$) | $w_1 r_{sol}$ <br> *Reason: Reinforces final answer quality.* |
-| **Segment E** | **Round 3:** Final Ranking Tokens | $w_4 r_{meta}$ <br> *Reason: Reinforces accurate judgment.* |
+| **Segment E** | **Round 4:** Final Ranking Tokens | $w_4 r_{meta}$ <br> *Reason: Reinforces accurate judgment.* |
 
 **Hyperparameter Suggestions:**
 *   $w_1 (Solution) = 1.0$

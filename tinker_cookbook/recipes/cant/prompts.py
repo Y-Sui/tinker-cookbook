@@ -2,6 +2,33 @@
 Round-specific system prompts for CANT protocol.
 """
 
+DEFAULT_AGENT_PERSONAS: list[str] = [
+    (
+        "You are a rigorous analyst. State assumptions, follow a clean logical chain, "
+        "and avoid unstated leaps. Prefer correctness over speed."
+    ),
+    (
+        "You are a creative solver. Explore unconventional angles, patterns, and "
+        "decompositions, then sanity-check the result."
+    ),
+    (
+        "You are a skeptical reviewer. Actively search for gaps, counterexamples, "
+        "and hidden constraints; challenge weak reasoning."
+    ),
+    (
+        "You are a concise explainer. Provide the minimal sufficient reasoning and "
+        "a clear final answer without extra verbosity."
+    ),
+    (
+        "You are a methodical checker. Re-derive critical steps, verify computations, "
+        "and confirm that the conclusion follows."
+    ),
+]
+
+
+def get_default_agent_personas() -> list[str]:
+    return DEFAULT_AGENT_PERSONAS.copy()
+
 
 def get_round1_system_prompt(persona: str | None = None) -> str:
     """
@@ -80,7 +107,7 @@ Note: You can critique as many or as few agents as you think necessary."""
 
 def get_round3_system_prompt(persona: str | None = None) -> str:
     """
-    Get system prompt for Round 3: Revision + Final Verdict.
+    Get system prompt for Round 3: Revision.
 
     Args:
         persona: Optional persona description for the agent
@@ -93,7 +120,7 @@ def get_round3_system_prompt(persona: str | None = None) -> str:
         persona_text = f"\n{persona}\n"
 
     return f"""You are participating in a multi-agent self-evolution protocol.{persona_text}
-ROUND 3: REVISION + FINAL VERDICT
+ROUND 3: REVISION
 
 You have received critiques from other agents about your initial solution (shown below).
 
@@ -104,16 +131,37 @@ Your tasks:
    - Correcting any errors identified
    - Adding missing considerations
 
-2. **Final Ranking**: Re-evaluate all agents' solutions based on:
-   - Your revised understanding after seeing critiques
-   - The quality of each agent's initial solution
-   - Format: "Agent X > Agent Y" (one comparison per line)
-
 OUTPUT FORMAT:
 <revised_solution>
 [Your improved solution incorporating feedback or defending your original approach]
-</revised_solution>
+</revised_solution>"""
 
+
+def get_round4_system_prompt(persona: str | None = None) -> str:
+    """
+    Get system prompt for Round 4: Final Verdict.
+
+    Args:
+        persona: Optional persona description for the agent
+
+    Returns:
+        Formatted system prompt
+    """
+    persona_text = ""
+    if persona:
+        persona_text = f"\n{persona}\n"
+
+    return f"""You are participating in a multi-agent self-evolution protocol.{persona_text}
+ROUND 4: FINAL VERDICT
+
+You will see the revised solutions from all agents below.
+
+Your task:
+1. **Final Ranking**: Re-evaluate all agents' solutions based on their revised solutions.
+   - Format: "Agent X > Agent Y" (one comparison per line)
+   - Use '>' for better than, '<' for worse than, '=' for equal quality
+
+OUTPUT FORMAT:
 <final_ranking>
 Agent 0 > Agent 1
 Agent 2 > Agent 0
@@ -132,6 +180,25 @@ def format_initial_solutions(solutions: dict[int, str]) -> str:
         Formatted string showing all solutions
     """
     formatted = "INITIAL SOLUTIONS FROM ALL AGENTS:\n\n"
+
+    for agent_id in sorted(solutions.keys()):
+        solution = solutions[agent_id]
+        formatted += f"--- Agent {agent_id} ---\n{solution}\n\n"
+
+    return formatted.strip()
+
+
+def format_revised_solutions(solutions: dict[int, str]) -> str:
+    """
+    Format revised solutions from all agents for Round 4 context.
+
+    Args:
+        solutions: Dict mapping agent_id to their revised solution text
+
+    Returns:
+        Formatted string showing all revised solutions
+    """
+    formatted = "REVISED SOLUTIONS FROM ALL AGENTS:\n\n"
 
     for agent_id in sorted(solutions.keys()):
         solution = solutions[agent_id]
@@ -190,3 +257,12 @@ def get_user_message_round3(
     solutions_text = format_initial_solutions(solutions)
     critiques_text = format_critiques_for_agent(agent_id, critiques)
     return f"Query: {query}\n\n{solutions_text}\n\n{critiques_text}"
+
+
+def get_user_message_round4(
+    query: str,
+    revised_solutions: dict[int, str],
+) -> str:
+    """Get user message for Round 4."""
+    solutions_text = format_revised_solutions(revised_solutions)
+    return f"Query: {query}\n\n{solutions_text}"

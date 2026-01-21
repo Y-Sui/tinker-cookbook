@@ -25,9 +25,12 @@ from tinker_cookbook.recipes.cant.prompts import (
     get_round1_system_prompt,
     get_round2_system_prompt,
     get_round3_system_prompt,
+    get_round4_system_prompt,
     get_user_message_round1,
     get_user_message_round2,
     get_user_message_round3,
+    get_user_message_round4,
+    get_default_agent_personas,
 )
 
 # Stop condition for CANT (empty list means use default EOS)
@@ -39,10 +42,11 @@ class CANTEnv(Env):
     """
     Environment for one agent in the CANT (Critique and Revision) protocol.
 
-    The CANT protocol has three rounds:
+    The CANT protocol has four rounds:
     - Round 0: Generate initial solution
     - Round 1: Provide blind ranking + targeted critiques
-    - Round 2: Revise solution + provide final ranking
+    - Round 2: Revise solution
+    - Round 3: Provide final ranking of revised solutions
 
     Each agent proceeds through rounds synchronously with other agents in the group.
     """
@@ -86,6 +90,13 @@ class CANTEnv(Env):
                 self.coordinator.critique_texts
             )
 
+        elif current_round == 3:
+            system_prompt = get_round4_system_prompt(self.persona)
+            user_message = get_user_message_round4(
+                self.coordinator.question,
+                self.coordinator.revised_solutions,
+            )
+
         else:
             # Episode is complete
             return types.ModelInput.empty()
@@ -124,6 +135,8 @@ class CANTEnv(Env):
             self.coordinator.add_round2_response(self.agent_id, action_content)
         elif current_round == 2:
             self.coordinator.add_round3_response(self.agent_id, action_content)
+        elif current_round == 3:
+            self.coordinator.add_round4_response(self.agent_id, action_content)
 
         # Increment step count
         self._step_count += 1
@@ -133,7 +146,7 @@ class CANTEnv(Env):
         if self.coordinator.can_advance_round():
             self.coordinator.advance_round()
 
-        # Check if episode is complete (all 3 rounds done)
+        # Check if episode is complete (all rounds done)
         if self.coordinator.is_complete():
             self._episode_done = True
 
@@ -190,8 +203,14 @@ class CANTEnvGroupBuilder(EnvGroupBuilder):
     weight_accept: float = field(default=0.5, kw_only=True)
 
     # Environment configuration
-    persona: str | None = field(default=None, kw_only=True)
+    personas: list[str] | None = field(default=None, kw_only=True)
     max_response_tokens: int = field(default=2048, kw_only=True)
+
+    def logging_tags(self) -> list[str]:
+        dataset_name = self.problem_state.get("dataset_name")
+        if dataset_name:
+            return [str(dataset_name)]
+        return []
 
     async def make_envs(self) -> Sequence[Env]:
         """
@@ -214,13 +233,15 @@ class CANTEnvGroupBuilder(EnvGroupBuilder):
         )
 
         # Create one environment per agent
+        personas = self.personas or get_default_agent_personas()
         envs = []
         for agent_id in range(self.num_agents):
+            persona = personas[agent_id % len(personas)]
             env = CANTEnv(
                 agent_id=agent_id,
                 coordinator=coordinator,
                 renderer=self.renderer,
-                persona=self.persona,
+                persona=persona,
                 max_response_tokens=self.max_response_tokens,
             )
             envs.append(env)
@@ -321,11 +342,22 @@ class CANTEnvGroupBuilder(EnvGroupBuilder):
                     token_rewards = [step_reward] * len(transition.ac.tokens)
                 transition.token_rewards = token_rewards
             elif step_idx == 2:
-                step_reward = sol_reward + meta_reward
+                step_reward = sol_reward
                 transition.reward = step_reward
                 token_rewards = self._token_rewards_for_tags(
                     transition.ac.tokens,
-                    [("revised_solution", sol_reward), ("final_ranking", meta_reward)],
+                    [("revised_solution", sol_reward)],
+                    default_reward=0.0,
+                )
+                if token_rewards is None:
+                    token_rewards = [step_reward] * len(transition.ac.tokens)
+                transition.token_rewards = token_rewards
+            elif step_idx == 3:
+                step_reward = meta_reward
+                transition.reward = step_reward
+                token_rewards = self._token_rewards_for_tags(
+                    transition.ac.tokens,
+                    [("final_ranking", meta_reward)],
                     default_reward=0.0,
                 )
                 if token_rewards is None:

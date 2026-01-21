@@ -12,6 +12,7 @@ from tinker_cookbook.rl.types import Env, Trajectory
 
 from tinker_cookbook.recipes.cant.env import CANTEnv, CANTEnvGroupBuilder
 from tinker_cookbook.recipes.cant.coordinator import CANTCoordinator
+from tinker_cookbook.recipes.cant.metrics import compute_verifiable_metrics
 
 
 @dataclass
@@ -103,6 +104,26 @@ class VerifiableCANTEnvGroupBuilder(CANTEnvGroupBuilder):
         """
         # Use base implementation (pure peer evaluation)
         metrics_list = await super().compute_group_rewards(trajectory_group, env_group)
+
+        coordinator = env_group[0].coordinator
+        answer = coordinator.answer
+        if answer is not None:
+            dataset_name = self.problem_state.get("dataset_name")
+            per_agent_metrics = compute_verifiable_metrics(
+                coordinator=coordinator,
+                answer=answer,
+                num_agents=self.num_agents,
+                dataset_name=dataset_name,
+            )
+            if len(per_agent_metrics) == len(metrics_list):
+                updated_metrics_list: list[tuple[float, dict]] = []
+                for (final_reward, metrics), agent_metrics in zip(
+                    metrics_list, per_agent_metrics, strict=True
+                ):
+                    merged = dict(metrics)
+                    merged.update(agent_metrics)
+                    updated_metrics_list.append((final_reward, merged))
+                metrics_list = updated_metrics_list
 
         # Optionally add ground truth bonus (not implemented yet)
         if self.use_ground_truth_bonus and self.ground_truth_bonus_weight > 0:

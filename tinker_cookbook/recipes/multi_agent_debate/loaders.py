@@ -109,7 +109,7 @@ def _limit_dataset_rows(ds: "object", max_count: int) -> "object":
 
 
 def load_math_problems_from_hf(
-    dataset_name: Literal["math", "math500", "polaris", "deepmath", "gsm8k"],
+    dataset_name: Literal["math", "math500", "polaris", "deepmath", "gsm8k", "aime2024", "aime2025"],
     split: Literal["train", "test"] = "train",
     max_count: int = 1000,
 ) -> list["VerifiableMathProblem"]:
@@ -121,7 +121,20 @@ def load_math_problems_from_hf(
     - polaris: Polaris-Dataset-53K
     - deepmath: DeepMath-103K
     - gsm8k: GSM8K (requires parsing the final answer line)
+    - aime2024: Local JSONL sample (tinker_cookbook/data/aime2024_sample.jsonl)
+    - aime2025: Local JSONL sample (tinker_cookbook/data/aime2025_sample.jsonl)
     """
+    if dataset_name in {"aime2024", "aime2025"}:
+        local_path = Path(__file__).resolve().parents[2] / "data" / f"{dataset_name}_sample.jsonl"
+        if not local_path.exists():
+            raise ValueError(f"Missing local dataset file: {local_path}")
+        return load_math_problems_from_jsonl(
+            path=str(local_path),
+            problem_field="problem",
+            answer_field="answer",
+            max_count=max_count,
+        )
+
     from datasets import load_dataset
 
     from .verifiable_env import VerifiableMathProblem

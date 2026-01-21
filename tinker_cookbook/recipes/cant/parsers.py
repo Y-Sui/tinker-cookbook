@@ -25,8 +25,14 @@ class Round2Response:
 
 @dataclass
 class Round3Response:
-    """Parsed response from Round 3 (Revision + Final Verdict)."""
+    """Parsed response from Round 3 (Revision)."""
     revised_solution: str
+    author_id: int
+
+
+@dataclass
+class Round4Response:
+    """Parsed response from Round 4 (Final Verdict)."""
     final_ranking: list[tuple[int, str, int]]  # (agent_a, op, agent_b)
     author_id: int
 
@@ -197,7 +203,7 @@ def parse_round2_response(response: str, author_id: int) -> Round2Response:
 
 def parse_round3_response(response: str, author_id: int) -> Round3Response:
     """
-    Parse Round 3 response containing revised solution and final ranking.
+    Parse Round 3 response containing revised solution.
 
     Args:
         response: Agent's response text
@@ -219,14 +225,29 @@ def parse_round3_response(response: str, author_id: int) -> Round3Response:
         else:
             revised_solution = response.strip()
 
-    # Extract final ranking
+    return Round3Response(
+        revised_solution=revised_solution,
+        author_id=author_id,
+    )
+
+
+def parse_round4_response(response: str, author_id: int) -> Round4Response:
+    """
+    Parse Round 4 response containing final ranking.
+
+    Args:
+        response: Agent's response text
+        author_id: ID of the agent who generated this response
+
+    Returns:
+        Round4Response object with parsed content
+    """
     final_ranking_text = extract_xml_content(response, "final_ranking")
     final_ranking = []
     if final_ranking_text:
         final_ranking = parse_pairwise_rankings(final_ranking_text)
 
-    return Round3Response(
-        revised_solution=revised_solution,
+    return Round4Response(
         final_ranking=final_ranking,
         author_id=author_id,
     )

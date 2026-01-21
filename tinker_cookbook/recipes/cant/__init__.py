@@ -1,10 +1,11 @@
 """
 CANT (Critique and Revision) Framework
 
-A three-round self-evolution system featuring:
+A four-round self-evolution system featuring:
 - Round 1: Initial proposal generation
 - Round 2: Blind evaluation + targeted critique
-- Round 3: Revision + final verdict
+- Round 3: Revision
+- Round 4: Final verdict on revised solutions
 
 Rewards based on persuasion success (Bradley-Terry scoring), solution quality,
 consensus alignment, and improvement acceptance.

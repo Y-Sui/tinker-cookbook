@@ -7,6 +7,7 @@ from tinker_cookbook.recipes.cant.parsers import (
     parse_round1_response,
     parse_round2_response,
     parse_round3_response,
+    parse_round4_response,
 )
 
 
@@ -116,17 +117,26 @@ def test_parse_round3_response():
     <revised_solution>
     This is my revised solution incorporating feedback.
     </revised_solution>
-
-    <final_ranking>
-    Agent 0 > Agent 1
-    Agent 2 > Agent 0
-    </final_ranking>
     """
 
     parsed = parse_round3_response(response, author_id=1)
 
     assert parsed.author_id == 1
     assert "revised solution" in parsed.revised_solution
+
+
+def test_parse_round4_response():
+    """Test Round 4 response parsing."""
+    response = """
+    <final_ranking>
+    Agent 0 > Agent 1
+    Agent 2 > Agent 0
+    </final_ranking>
+    """
+
+    parsed = parse_round4_response(response, author_id=2)
+
+    assert parsed.author_id == 2
     assert len(parsed.final_ranking) == 2
     assert (0, '>', 1) in parsed.final_ranking
     assert (2, '>', 0) in parsed.final_ranking

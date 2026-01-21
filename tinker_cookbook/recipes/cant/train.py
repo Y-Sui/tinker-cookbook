@@ -1,14 +1,14 @@
 """
 Training script for CANT (Critique and Revision) framework.
 
-Supports both verifiable and non-verifiable tasks with three-round protocol:
+Supports both verifiable and non-verifiable tasks with four-round protocol:
 1. Proposal: Generate initial solutions
 2. Critique: Provide blind rankings and targeted critiques
-3. Revision: Revise solutions and provide final rankings
+3. Revision: Revise solutions
+4. Final Verdict: Rank revised solutions
 """
 
 import asyncio
-import json
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
@@ -17,25 +17,13 @@ import chz
 from dotenv import load_dotenv
 
 from tinker_cookbook import model_info
+from tinker_cookbook.recipes.cant import loader
 from tinker_cookbook.recipes.cant.env import CANTEnvGroupBuilder
 from tinker_cookbook.recipes.cant.verifiable_env import VerifiableCANTEnvGroupBuilder
 from tinker_cookbook.renderers import get_renderer
 from tinker_cookbook.rl import train
 from tinker_cookbook.rl.types import RLDataset, RLDatasetBuilder
 from tinker_cookbook.tokenizer_utils import get_tokenizer
-
-
-def _load_jsonl(path: str) -> list[dict]:
-    items: list[dict] = []
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            items.append(json.loads(line))
-    if not items:
-        raise ValueError(f"No records loaded from {path}")
-    return items
 
 
 load_dotenv(override=True)
@@ -57,7 +45,6 @@ class CANTConfig:
     # ============================================================================
     env_type: Literal["verifiable", "non-verifiable"] = "verifiable"
     num_agents: int = 4  # Number of agents in CANT protocol
-
     # ============================================================================
     # Training Configuration
     # ============================================================================
@@ -66,6 +53,8 @@ class CANTConfig:
     epoch: int = 1  # Number of epochs
     learning_rate: float = 3e-5
     use_cosine_lr_schedule: bool = False
+    eval_every: int = 0  # 0 = disable evaluation
+    num_test_datapoints: int = -1  # <0 = use all test datapoints
 
     # ============================================================================
     # CANT Reward Hyperparameters
@@ -79,16 +68,10 @@ class CANTConfig:
     # ============================================================================
     # Dataset Configuration: Non-Verifiable
     # ============================================================================
-    non_verifiable_dataset_path: str = "tinker_cookbook/data/longwriter_6k_sample.jsonl"
-    non_verifiable_problem_field: str = "query"
-
-    # ============================================================================
-    # Dataset Configuration: Verifiable
-    # ============================================================================
-    verifiable_dataset_path: str = "tinker_cookbook/data/aime2024_sample.jsonl"
-    verifiable_problem_field: str = "problem"
-    verifiable_answer_field: str = "answer"
+    train_datasets: str | None = "aime2024"  # Comma-separated dataset names
+    test_datasets: str | None = None  # Comma-separated dataset names (defaults to train)
     max_questions: int = -1  # Max problems to load (-1 = all)
+    max_test_questions: int = -1  # Max test problems to load (-1 = all)
 
     # ============================================================================
     # Logging Configuration
@@ -145,6 +128,8 @@ class CANTDatasetBuilder(RLDatasetBuilder):
     num_train_datapoints: int
     epoch: int
     problem_states: list[dict]
+    num_test_datapoints: int = -1
+    test_problem_states: list[dict] | None = None
     env_group_builder_cls: type[CANTEnvGroupBuilder]
     model_name: str
     renderer_name: str
@@ -184,7 +169,23 @@ class CANTDatasetBuilder(RLDatasetBuilder):
             env_group_builder_cls=self.env_group_builder_cls,
             env_group_builder_kwargs=env_group_builder_kwargs,
         )
-        return train_dataset, None
+        if self.num_test_datapoints == 0:
+            return train_dataset, None
+
+        test_states = self.test_problem_states or self.problem_states
+        if self.num_test_datapoints < 0:
+            test_size = len(test_states)
+        else:
+            test_size = min(self.num_test_datapoints, len(test_states))
+        test_batch_size = min(self.batch_size, test_size)
+        test_dataset = CANTDataset(
+            batch_size=test_batch_size,
+            problem_states=test_states[:test_size],
+            num_datapoints=test_size,
+            env_group_builder_cls=self.env_group_builder_cls,
+            env_group_builder_kwargs=env_group_builder_kwargs,
+        )
+        return train_dataset, test_dataset
 
 
 def build_dataset_builder(
@@ -201,34 +202,36 @@ def build_dataset_builder(
     Returns:
         RLDatasetBuilder instance
     """
-    if config.env_type == "verifiable":
-        # Load verifiable dataset (with answers)
-        problems = _load_jsonl(config.verifiable_dataset_path)
-        if config.max_questions > 0:
-            problems = problems[: config.max_questions]
+    train_datasets = loader.parse_dataset_list(config.train_datasets)
+    if not train_datasets:
+        raise ValueError("train_datasets must be set to at least one dataset name")
+    test_datasets = loader.parse_dataset_list(config.test_datasets) or train_datasets
 
-        problem_states = [
-            {
-                "question": p[config.verifiable_problem_field],
-                "answer": p[config.verifiable_answer_field],
-            }
-            for p in problems
-        ]
+    if config.env_type == "verifiable":
+        problem_states = loader.load_verifiable_dataset_states(
+            train_datasets,
+            split="train",
+            max_count=config.max_questions,
+        )
+        test_problem_states = loader.load_verifiable_dataset_states(
+            test_datasets,
+            split="test",
+            max_count=config.max_test_questions,
+        )
 
         env_group_builder_cls = VerifiableCANTEnvGroupBuilder
 
     else:  # non-verifiable
-        # Load non-verifiable dataset (no answers)
-        problems = _load_jsonl(config.non_verifiable_dataset_path)
-        if config.max_questions > 0:
-            problems = problems[: config.max_questions]
-
-        problem_states = [
-            {
-                "question": p[config.non_verifiable_problem_field],
-            }
-            for p in problems
-        ]
+        problem_states = []
+        for name in train_datasets:
+            problem_states.extend(
+                loader.load_non_verifiable_dataset_states(name, config.max_questions)
+            )
+        test_problem_states = []
+        for name in test_datasets:
+            test_problem_states.extend(
+                loader.load_non_verifiable_dataset_states(name, config.max_test_questions)
+            )
 
         env_group_builder_cls = CANTEnvGroupBuilder
 
@@ -237,6 +240,8 @@ def build_dataset_builder(
         num_train_datapoints=config.num_train_datapoints,
         epoch=config.epoch,
         problem_states=problem_states,
+        num_test_datapoints=config.num_test_datapoints,
+        test_problem_states=test_problem_states,
         env_group_builder_cls=env_group_builder_cls,
         model_name=model_name,
         renderer_name=renderer_name,
@@ -277,8 +282,9 @@ async def main():
     if config.log_path:
         log_path = Path(config.log_path)
         log_path.mkdir(parents=True, exist_ok=True)
+        log_path = str(log_path)
     else:
-        log_path = f"~/tinker/multi-agent-debate/{config.wandb_name}"
+        log_path = f"~/tinker/multi-agent-debate/{run_name}"
 
     print("Starting CANT training:")
     print(f"  Model: {model_name}")
@@ -289,6 +295,10 @@ async def main():
     print(f"  Training datapoints: {config.num_train_datapoints}")
     print(f"  Epochs: {config.epoch}")
     print(f"  Learning rate: {config.learning_rate}")
+    train_datasets = loader.parse_dataset_list(config.train_datasets)
+    test_datasets = loader.parse_dataset_list(config.test_datasets) or train_datasets
+    print(f"  Train datasets: {', '.join(train_datasets)}")
+    print(f"  Test datasets: {', '.join(test_datasets)}")
     print(
         f"  Reward weights: disc={config.weight_disc}, sol={config.weight_sol}, "
         f"meta={config.weight_meta}, accept={config.weight_accept}"
@@ -308,7 +318,8 @@ async def main():
         num_groups_to_log=config.num_groups_to_log,
         wandb_project=config.wandb_project,
         wandb_name=run_name,
-        log_path=str(log_path),
+        log_path=log_path,
+        eval_every=config.eval_every,
     )
 
     # Start training

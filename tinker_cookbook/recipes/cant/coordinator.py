@@ -1,5 +1,5 @@
 """
-Coordinator for managing the three-round CANT protocol.
+Coordinator for managing the four-round CANT protocol.
 """
 
 from dataclasses import dataclass, field
@@ -9,30 +9,33 @@ from tinker_cookbook.recipes.cant.parsers import (
     parse_round1_response,
     parse_round2_response,
     parse_round3_response,
+    parse_round4_response,
     Round1Response,
     Round2Response,
     Round3Response,
+    Round4Response,
 )
 
 
 @dataclass
 class CANTCoordinator:
     """
-    Coordinates the three-round CANT protocol for a single problem.
+    Coordinates the four-round CANT protocol for a single problem.
 
     Tracks agent responses across rounds and maintains shared state.
 
     Rounds:
         0 (Proposal): Agents generate initial solutions
         1 (Critique): Agents provide blind rankings and targeted critiques
-        2 (Revision): Agents revise solutions and provide final rankings
+        2 (Revision): Agents revise solutions
+        3 (Final Verdict): Agents provide final rankings of revised solutions
     """
 
     question: str
     num_agents: int
     answer: str | None = None  # Optional ground truth (for verifiable tasks)
 
-    # Current round (0, 1, or 2)
+    # Current round (0, 1, 2, or 3)
     current_round: int = 0
 
     # Round 0: Initial solutions
@@ -45,10 +48,12 @@ class CANTCoordinator:
     critique_texts: dict[int, dict[int, str]] = field(default_factory=dict)  # {author: {target: text}}
     round2_responses: dict[int, Round2Response] = field(default_factory=dict)
 
-    # Round 2: Revised solutions and final rankings
+    # Round 2: Revised solutions
     revised_solutions: dict[int, str] = field(default_factory=dict)
-    final_rankings: dict[int, list[tuple[int, str, int]]] = field(default_factory=dict)
     round3_responses: dict[int, Round3Response] = field(default_factory=dict)
+    # Round 3: Final rankings
+    final_rankings: dict[int, list[tuple[int, str, int]]] = field(default_factory=dict)
+    round4_responses: dict[int, Round4Response] = field(default_factory=dict)
 
     # Reward computation results (populated after episode ends)
     rewards_computed: bool = False
@@ -57,11 +62,11 @@ class CANTCoordinator:
     reward_breakdown: dict[int, dict[str, float]] = field(default_factory=dict)
 
     def is_complete(self) -> bool:
-        """Check if all three rounds are complete."""
-        return self.current_round >= 3
+        """Check if all rounds are complete."""
+        return self.current_round >= 4
 
     def get_current_round(self) -> int:
-        """Get the current round number (0, 1, or 2)."""
+        """Get the current round number (0, 1, 2, or 3)."""
         return self.current_round
 
     def add_round1_response(self, agent_id: int, response_text: str) -> None:
@@ -101,11 +106,22 @@ class CANTCoordinator:
         parsed = parse_round3_response(response_text, agent_id)
         self.round3_responses[agent_id] = parsed
         self.revised_solutions[agent_id] = parsed.revised_solution
+
+    def add_round4_response(self, agent_id: int, response_text: str) -> None:
+        """
+        Process and store a Round 4 response.
+
+        Args:
+            agent_id: ID of the responding agent
+            response_text: Raw response text from the agent
+        """
+        parsed = parse_round4_response(response_text, agent_id)
+        self.round4_responses[agent_id] = parsed
         self.final_rankings[agent_id] = parsed.final_ranking
 
     def advance_round(self) -> None:
         """Advance to the next round."""
-        if self.current_round < 3:
+        if self.current_round < 4:
             self.current_round += 1
 
     def can_advance_round(self) -> bool:
@@ -121,6 +137,8 @@ class CANTCoordinator:
             return len(self.round2_responses) == self.num_agents
         elif self.current_round == 2:
             return len(self.round3_responses) == self.num_agents
+        elif self.current_round == 3:
+            return len(self.round4_responses) == self.num_agents
         return False
 
     def get_initial_solutions(self) -> dict[int, str]:
@@ -277,13 +295,20 @@ class CANTCoordinator:
         lines.append("")
 
         # Round 3
-        lines.append("ROUND 3: Revised Solutions and Final Rankings")
+        lines.append("ROUND 3: Revised Solutions")
         lines.append("-" * 80)
         for agent_id in sorted(self.revised_solutions.keys()):
             solution = self.revised_solutions[agent_id]
-            rankings = self.final_rankings[agent_id]
             lines.append(f"Agent {agent_id}:")
             lines.append(f"  Revised: {solution[:100]}...")
+        lines.append("")
+
+        # Round 4
+        lines.append("ROUND 4: Final Rankings")
+        lines.append("-" * 80)
+        for agent_id in sorted(self.final_rankings.keys()):
+            rankings = self.final_rankings[agent_id]
+            lines.append(f"Agent {agent_id}:")
             lines.append(f"  Rankings: {rankings}")
         lines.append("")
 
