@@ -184,7 +184,7 @@ class CANTEnvGroupBuilder(EnvGroupBuilder):
     - weight_disc: Weight for persuasion component (critique effectiveness)
     - weight_sol: Weight for solution quality component
     - weight_meta: Weight for consensus component
-    - weight_accept: Weight for acceptance component (improvement)
+
     """
 
     num_agents: int
@@ -197,7 +197,6 @@ class CANTEnvGroupBuilder(EnvGroupBuilder):
     weight_disc: float = field(default=2.0, kw_only=True)
     weight_sol: float = field(default=1.0, kw_only=True)
     weight_meta: float = field(default=1.0, kw_only=True)
-    weight_accept: float = field(default=0.5, kw_only=True)
 
     # Environment configuration
     personas: list[str] | None = field(default=None, kw_only=True)
@@ -275,7 +274,6 @@ class CANTEnvGroupBuilder(EnvGroupBuilder):
             weight_disc=self.weight_disc,
             weight_sol=self.weight_sol,
             weight_meta=self.weight_meta,
-            weight_accept=self.weight_accept,
         )
 
         # Assign rewards to trajectory tokens
@@ -311,13 +309,12 @@ class CANTEnvGroupBuilder(EnvGroupBuilder):
         """
         breakdown = coordinator.reward_breakdown[agent_id]
         sol_reward = breakdown.get("sol", 0.0)
-        accept_reward = breakdown.get("accept", 0.0)
         disc_reward = breakdown.get("disc", 0.0)
         meta_reward = breakdown.get("meta", 0.0)
 
         for step_idx, transition in enumerate(trajectory.transitions):
             if step_idx == 0:
-                step_reward = sol_reward + accept_reward
+                step_reward = sol_reward
                 transition.reward = step_reward
                 token_rewards = self._token_rewards_for_tags(
                     transition.ac.tokens,
@@ -457,8 +454,12 @@ class CANTEnvGroupBuilder(EnvGroupBuilder):
             metrics[f"{prefix}/num_critiques_given"] = float(num_critiques)
 
         # Group-level metrics
-        all_bt_t0 = [coordinator.bradley_terry_scores_t0.get(i, 0.0) for i in range(self.num_agents)]
-        all_bt_final = [coordinator.bradley_terry_scores_final.get(i, 0.0) for i in range(self.num_agents)]
+        all_bt_t0 = [
+            coordinator.bradley_terry_scores_t0.get(i, 0.0) for i in range(self.num_agents)
+        ]
+        all_bt_final = [
+            coordinator.bradley_terry_scores_final.get(i, 0.0) for i in range(self.num_agents)
+        ]
 
         metrics["group/bt_score_t0_mean"] = np.mean(all_bt_t0)
         metrics["group/bt_score_t0_std"] = np.std(all_bt_t0)

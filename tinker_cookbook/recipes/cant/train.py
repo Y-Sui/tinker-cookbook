@@ -63,7 +63,6 @@ class CANTConfig:
     weight_disc: float = 2.0  # Weight for persuasion component
     weight_sol: float = 1.0  # Weight for solution quality component
     weight_meta: float = 1.0  # Weight for consensus component
-    weight_accept: float = 0.5  # Weight for acceptance component
     # ============================================================================
     # Dataset Configuration
     # ============================================================================

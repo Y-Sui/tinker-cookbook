@@ -1,11 +1,10 @@
 """
 Reward computation for CANT framework.
 
-Implements four reward components:
+Implements three reward components:
 1. r_disc: Persuasion reward (did critiques change others' scores?)
-2. r_sol: Solution quality reward (Bradley-Terry score, Z-normalized)
-3. r_meta: Consensus reward (alignment with majority opinion)
-4. r_accept: Acceptance reward (did agent improve their own score?)
+2. r_sol: Solution quality reward (final Bradley-Terry score)
+3. r_meta: Majority alignment reward (agreement with majority preferences)
 """
 
 import numpy as np
@@ -57,33 +56,19 @@ def compute_persuasion_rewards(
 def compute_solution_rewards(
     v_final: np.ndarray,
 ) -> np.ndarray:
-    """
-    Compute r_sol via Z-score normalization of final Bradley-Terry scores.
-
-    This rewards high-quality solutions relative to the group.
+    """Compute r_sol as the final Bradley-Terry score.
 
     Args:
         v_final: Final Bradley-Terry scores for all agents
 
     Returns:
-        Array of solution rewards (Z-normalized scores)
+        Array of solution rewards in [0, 1].
 
-    Formula:
-        r_sol(i) = (V_i^final - μ) / σ
-
-    Where μ and σ are computed within the group.
+    Note:
+        We keep this reward in the natural Bradley-Terry scale for interpretability.
+        Normalization (if desired) can be handled by downstream advantage processing.
     """
-    mean = float(np.mean(v_final))
-    std = float(np.std(v_final))
-
-    # Avoid division by zero if all scores identical
-    if std < 1e-8:
-        return np.zeros_like(v_final, dtype=np.float32)
-
-    # Z-score normalization
-    r_sol = (v_final - mean) / std
-
-    return r_sol.astype(np.float32)
+    return v_final.astype(np.float32)
 
 
 def compute_consensus_rewards(
@@ -98,27 +83,26 @@ def compute_consensus_rewards(
         final_rankings: Dict mapping {author_id: [(agent_a, op, agent_b), ...]}
 
     Returns:
-        Dict mapping agent_id to consensus reward in range [-1, 1]
+        Dict mapping agent_id to majority-alignment reward in range [0, 1]
 
     Formula:
-        r_meta(i) = (2 × correct - total) / total
+        r_meta(i) = correct / total
 
     Where:
         - correct = number of pairwise comparisons matching majority
         - total = total number of comparisons made
-        - Result ranges from -1 (all wrong) to +1 (all correct)
     """
     # Build majority preferences for each pair
     pair_votes = defaultdict(list)  # {(A, B): [(author_id, winner), ...]}
 
     for author_id, rankings in final_rankings.items():
         for agent_a, op, agent_b in rankings:
-            if op == '=':
+            if op == "=":
                 continue  # Skip ties for majority computation
 
             # Normalize pair to consistent order
             pair = tuple(sorted([agent_a, agent_b]))
-            winner = agent_a if op == '>' else agent_b
+            winner = agent_a if op == ">" else agent_b
 
             # Handle reversed pair
             if pair != (agent_a, agent_b):
@@ -141,7 +125,7 @@ def compute_consensus_rewards(
         total = 0
 
         for agent_a, op, agent_b in rankings:
-            if op == '=':
+            if op == "=":
                 continue
 
             # Normalize pair
@@ -150,7 +134,7 @@ def compute_consensus_rewards(
                 continue  # Skip if no majority (shouldn't happen)
 
             # Determine this agent's vote
-            winner = agent_a if op == '>' else agent_b
+            winner = agent_a if op == ">" else agent_b
             if pair != (agent_a, agent_b):
                 # Pair was reversed
                 winner = agent_a if winner == agent_b else agent_b
@@ -160,39 +144,13 @@ def compute_consensus_rewards(
                 correct += 1
             total += 1
 
-        # Compute alignment score
+        # Compute majority-alignment rate
         if total > 0:
-            # Map [0, total] correct to [-1, +1]
-            rewards[author_id] = float(2 * correct - total) / total
+            rewards[author_id] = float(correct) / total
         else:
             rewards[author_id] = 0.0
 
     return rewards
-
-
-def compute_acceptance_rewards(
-    v_t0: np.ndarray,
-    v_final: np.ndarray,
-    bonus: float = 0.5,
-) -> np.ndarray:
-    """
-    Compute r_accept: bonus for agents who improved their own score.
-
-    This encourages agents to revise effectively in response to critiques.
-
-    Args:
-        v_t0: Initial Bradley-Terry scores (before revision)
-        v_final: Final Bradley-Terry scores (after revision)
-        bonus: Reward value for improvement
-
-    Returns:
-        Array of acceptance rewards
-
-    Formula:
-        r_accept(i) = bonus if V_i^final > V_i^t0 else 0
-    """
-    improved = (v_final > v_t0).astype(np.float32)
-    return improved * bonus
 
 
 def compute_all_rewards(
@@ -201,10 +159,8 @@ def compute_all_rewards(
     final_rankings: dict[int, list[tuple[int, str, int]]],
     num_agents: int,
     beta_disc: float = 5.0,
-    bonus_accept: float = 0.5,
 ) -> dict[str, dict[int, float] | np.ndarray]:
-    """
-    Compute all four reward components for a group of agents.
+    """Compute all reward components for a group of agents.
 
     Args:
         critiques: Dict mapping {author_id: [target_ids]}
@@ -212,14 +168,12 @@ def compute_all_rewards(
         final_rankings: Dict mapping {author_id: [(a, op, b), ...]} for Round 4
         num_agents: Total number of agents
         beta_disc: Scaling factor for persuasion rewards
-        bonus_accept: Bonus value for improvement
 
     Returns:
         Dict containing:
             'r_disc': Dict[int, float] - Persuasion rewards
             'r_sol': np.ndarray - Solution quality rewards
-            'r_meta': Dict[int, float] - Consensus rewards
-            'r_accept': np.ndarray - Acceptance rewards
+            'r_meta': Dict[int, float] - Majority-alignment rewards
             'v_t0': np.ndarray - Initial BT scores
             'v_final': np.ndarray - Final BT scores
     """
@@ -233,15 +187,13 @@ def compute_all_rewards(
     r_disc = compute_persuasion_rewards(critiques, v_t0, v_final, beta_disc)
     r_sol = compute_solution_rewards(v_final)
     r_meta = compute_consensus_rewards(final_rankings)
-    r_accept = compute_acceptance_rewards(v_t0, v_final, bonus_accept)
 
     return {
-        'r_disc': r_disc,
-        'r_sol': r_sol,
-        'r_meta': r_meta,
-        'r_accept': r_accept,
-        'v_t0': v_t0,
-        'v_final': v_final,
+        "r_disc": r_disc,
+        "r_sol": r_sol,
+        "r_meta": r_meta,
+        "v_t0": v_t0,
+        "v_final": v_final,
     }
 
 
@@ -249,38 +201,32 @@ def combine_rewards(
     r_disc: dict[int, float],
     r_sol: np.ndarray,
     r_meta: dict[int, float],
-    r_accept: np.ndarray,
     weight_disc: float = 2.0,
     weight_sol: float = 1.0,
     weight_meta: float = 1.0,
-    weight_accept: float = 0.5,
 ) -> dict[int, dict[str, float]]:
-    """
-    Combine reward components with configurable weights.
+    """Combine reward components with configurable weights.
 
     Args:
         r_disc: Persuasion rewards
         r_sol: Solution rewards
-        r_meta: Consensus rewards
-        r_accept: Acceptance rewards
+        r_meta: Majority-alignment rewards
         weight_disc: Weight for persuasion component
         weight_sol: Weight for solution component
-        weight_meta: Weight for consensus component
-        weight_accept: Weight for acceptance component
+        weight_meta: Weight for majority-alignment component
 
     Returns:
         Dict mapping agent_id to reward breakdown:
-            {agent_id: {'disc': float, 'sol': float, 'meta': float, 'accept': float}}
+            {agent_id: {'disc': float, 'sol': float, 'meta': float}}
     """
     num_agents = len(r_sol)
-    combined = {}
+    combined: dict[int, dict[str, float]] = {}
 
     for agent_id in range(num_agents):
         combined[agent_id] = {
-            'disc': weight_disc * r_disc.get(agent_id, 0.0),
-            'sol': weight_sol * float(r_sol[agent_id]),
-            'meta': weight_meta * r_meta.get(agent_id, 0.0),
-            'accept': weight_accept * float(r_accept[agent_id]),
+            "disc": weight_disc * r_disc.get(agent_id, 0.0),
+            "sol": weight_sol * float(r_sol[agent_id]),
+            "meta": weight_meta * r_meta.get(agent_id, 0.0),
         }
 
     return combined
