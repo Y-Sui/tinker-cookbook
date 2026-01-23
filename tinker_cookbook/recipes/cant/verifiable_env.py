@@ -10,7 +10,6 @@ from typing import Sequence
 
 from tinker_cookbook.recipes.cant.coordinator import CANTCoordinator
 from tinker_cookbook.recipes.cant.env import CANTEnv, CANTEnvGroupBuilder
-from tinker_cookbook.recipes.cant.metrics import compute_verifiable_metrics
 from tinker_cookbook.recipes.cant.prompts import get_default_agent_personas
 from tinker_cookbook.rl.types import Env, Trajectory
 
@@ -93,8 +92,8 @@ class VerifiableCANTEnvGroupBuilder(CANTEnvGroupBuilder):
         """
         Compute rewards for verifiable tasks.
 
-        Currently follows pure peer evaluation (same as base CANT).
-        Ground truth is available in coordinator.answer for future use.
+        Note: Correctness evaluation is now handled by Inspect AI evaluators
+        during eval phases. This only computes training rewards (peer evaluation).
 
         Args:
             trajectory_group: Trajectories for all agents
@@ -103,32 +102,17 @@ class VerifiableCANTEnvGroupBuilder(CANTEnvGroupBuilder):
         Returns:
             List of (final_reward, metrics) tuples
         """
-        coordinator = env_group[0].coordinator
-        answer = coordinator.answer
-        dataset_name = self.problem_state.get("dataset_name")
-        # Use base implementation (pure peer evaluation)
+        # Use base implementation (peer evaluation only)
         metrics_list = await super().compute_group_rewards(trajectory_group, env_group)
 
-        if answer is not None:
-            per_agent_metrics = compute_verifiable_metrics(
-                coordinator=coordinator,
-                answer=answer,
-                num_agents=self.num_agents,
-                dataset_name=dataset_name,
-            )
-            if len(per_agent_metrics) == len(metrics_list):
-                updated_metrics_list: list[tuple[float, dict]] = []
-                for (final_reward, metrics), agent_metrics in zip(
-                    metrics_list, per_agent_metrics, strict=True
-                ):
-                    merged = dict(metrics)
-                    merged.update(agent_metrics)
-                    updated_metrics_list.append((final_reward, merged))
-                metrics_list = updated_metrics_list
+        # REMOVED: compute_verifiable_metrics() call
+        # Evaluation metrics (correctness, format) are now computed by
+        # Inspect AI tasks during evaluation phases, not during training.
 
         # Optionally add ground truth bonus (not implemented yet)
         if self.use_ground_truth_bonus and self.ground_truth_bonus_weight > 0:
             for _final_reward, metrics in metrics_list:
                 metrics["ground_truth_bonus"] = 0.0  # Placeholder for future implementation
             # TODO: Implement correctness checking and bonus assignment
+
         return metrics_list

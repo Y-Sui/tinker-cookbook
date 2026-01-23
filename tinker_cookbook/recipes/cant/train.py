@@ -53,7 +53,6 @@ class CANTConfig:
     learning_rate: float = 3e-5
     use_cosine_lr_schedule: bool = False
     eval_every: int = 0  # 0 = disable evaluation
-    num_test_datapoints: int = -1  # <0 = use all test datapoints
     save_every: int = 20  # 0 = disable checkpointing
 
     # ============================================================================
@@ -67,9 +66,17 @@ class CANTConfig:
     # Dataset Configuration
     # ============================================================================
     train_datasets: str | None = "aime2024"  # Comma-separated dataset names
-    test_datasets: str | None = None  # Comma-separated dataset names (defaults to train)
     max_questions: int = -1  # Max problems to load (-1 = all)
-    max_test_questions: int = -1  # Max test problems to load (-1 = all)
+
+    # ============================================================================
+    # Evaluation Configuration
+    # ============================================================================
+    eval_tasks: str | None = None  # e.g., "gsm8k,math,aime2024"
+    eval_use_cant_protocol: bool = True  # False = baseline single-turn eval
+    eval_num_agents: int | None = None  # Defaults to self.num_agents
+    eval_temperature: float = 0.0
+    eval_max_tokens: int = 2048
+    eval_limit: int | None = None  # Max samples per task (None = all)
 
     # ============================================================================
     # Logging Configuration
@@ -126,8 +133,6 @@ class CANTDatasetBuilder(RLDatasetBuilder):
     num_train_datapoints: int
     epoch: int
     problem_states: list[dict]
-    num_test_datapoints: int = -1
-    test_problem_states: list[dict] | None = None
     env_group_builder_cls: type[CANTEnvGroupBuilder]
     model_name: str
     renderer_name: str
@@ -136,7 +141,6 @@ class CANTDatasetBuilder(RLDatasetBuilder):
     weight_disc: float
     weight_sol: float
     weight_meta: float
-    weight_accept: float
 
     async def __call__(self) -> tuple[RLDataset, RLDataset | None]:
         if not self.problem_states:
@@ -152,7 +156,6 @@ class CANTDatasetBuilder(RLDatasetBuilder):
             "weight_disc": self.weight_disc,
             "weight_sol": self.weight_sol,
             "weight_meta": self.weight_meta,
-            "weight_accept": self.weight_accept,
         }
         if self.num_train_datapoints < 0 or self.num_train_datapoints > len(self.problem_states):
             num_datapoints = len(self.problem_states) * self.epoch
@@ -166,23 +169,10 @@ class CANTDatasetBuilder(RLDatasetBuilder):
             env_group_builder_cls=self.env_group_builder_cls,
             env_group_builder_kwargs=env_group_builder_kwargs,
         )
-        if self.num_test_datapoints == 0:
-            return train_dataset, None
 
-        test_states = self.test_problem_states or self.problem_states
-        if self.num_test_datapoints < 0:
-            test_size = len(test_states)
-        else:
-            test_size = min(self.num_test_datapoints, len(test_states))
-        test_batch_size = min(self.batch_size, test_size)
-        test_dataset = CANTDataset(
-            batch_size=test_batch_size,
-            problem_states=test_states[:test_size],
-            num_datapoints=test_size,
-            env_group_builder_cls=self.env_group_builder_cls,
-            env_group_builder_kwargs=env_group_builder_kwargs,
-        )
-        return train_dataset, test_dataset
+        # Test dataset evaluation is now handled by Inspect AI evaluators
+        # via eval_tasks parameter
+        return train_dataset, None
 
 
 def build_dataset_builder(
@@ -202,18 +192,12 @@ def build_dataset_builder(
     train_datasets = loader.parse_dataset_list(config.train_datasets)
     if not train_datasets:
         raise ValueError("train_datasets must be set to at least one dataset name")
-    test_datasets = loader.parse_dataset_list(config.test_datasets) or train_datasets
 
     if config.env_type == "verifiable":
         problem_states = loader.load_verifiable_dataset_states(
             train_datasets,
             split="train",
             max_count=config.max_questions,
-        )
-        test_problem_states = loader.load_verifiable_dataset_states(
-            test_datasets,
-            split="test",
-            max_count=config.max_test_questions,
         )
 
         env_group_builder_cls = VerifiableCANTEnvGroupBuilder
@@ -224,11 +208,6 @@ def build_dataset_builder(
             problem_states.extend(
                 loader.load_non_verifiable_dataset_states(name, config.max_questions)
             )
-        test_problem_states = []
-        for name in test_datasets:
-            test_problem_states.extend(
-                loader.load_non_verifiable_dataset_states(name, config.max_test_questions)
-            )
 
         env_group_builder_cls = CANTEnvGroupBuilder
 
@@ -237,8 +216,6 @@ def build_dataset_builder(
         num_train_datapoints=config.num_train_datapoints,
         epoch=config.epoch,
         problem_states=problem_states,
-        num_test_datapoints=config.num_test_datapoints,
-        test_problem_states=test_problem_states,
         env_group_builder_cls=env_group_builder_cls,
         model_name=model_name,
         renderer_name=renderer_name,
@@ -247,7 +224,6 @@ def build_dataset_builder(
         weight_disc=config.weight_disc,
         weight_sol=config.weight_sol,
         weight_meta=config.weight_meta,
-        weight_accept=config.weight_accept,
     )
 
     return dataset_builder
@@ -293,15 +269,44 @@ async def main():
     print(f"  Epochs: {config.epoch}")
     print(f"  Learning rate: {config.learning_rate}")
     train_datasets = loader.parse_dataset_list(config.train_datasets)
-    test_datasets = loader.parse_dataset_list(config.test_datasets) or train_datasets
     print(f"  Train datasets: {', '.join(train_datasets)}")
-    print(f"  Test datasets: {', '.join(test_datasets)}")
     print(
         f"  Reward weights: disc={config.weight_disc}, sol={config.weight_sol}, "
-        f"meta={config.weight_meta}, accept={config.weight_accept}"
+        f"meta={config.weight_meta}"
     )
     print(f"  Beta (persuasion): {config.beta_disc}")
     print(f"  Log path: {log_path}")
+
+    # Build evaluator builders if configured
+    evaluator_builders = []
+    if config.eval_tasks and config.eval_every > 0:
+        from tinker_cookbook.recipes.cant.eval.evaluators import CANTEvaluatorBuilder
+
+        eval_num_agents = config.eval_num_agents or config.num_agents
+        task_names = [t.strip() for t in config.eval_tasks.split(",")]
+
+        eval_mode = "CANT protocol" if config.eval_use_cant_protocol else "Baseline"
+        print(f"\nEvaluation configuration:")
+        print(f"  Mode: {eval_mode}")
+        print(f"  Tasks: {', '.join(task_names)}")
+        if config.eval_use_cant_protocol:
+            print(f"  Agents: {eval_num_agents}")
+        print(f"  Eval every: {config.eval_every} steps")
+        if config.eval_limit:
+            print(f"  Sample limit: {config.eval_limit}")
+
+        evaluator_builder = CANTEvaluatorBuilder(
+            task_names=task_names,
+            renderer_name=renderer_name,
+            model_name=model_name,
+            use_cant_protocol=config.eval_use_cant_protocol,
+            num_agents=eval_num_agents,
+            temperature=config.eval_temperature,
+            max_tokens=config.eval_max_tokens,
+            limit=config.eval_limit,
+        )
+        evaluator_builders.append(evaluator_builder)
+
     print()
 
     # Build training config
@@ -318,6 +323,7 @@ async def main():
         log_path=log_path,
         eval_every=config.eval_every,
         save_every=config.save_every,
+        evaluator_builders=evaluator_builders,
     )
 
     # Start training

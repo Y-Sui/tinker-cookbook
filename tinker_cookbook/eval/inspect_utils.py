@@ -143,8 +143,28 @@ class InspectAPIFromTinkerSampling(InspectAIModelAPI):
         responses_text: list[str] = []
         for r in parsed_responses:
             content = r["content"]
-            assert isinstance(content, str), "Expected string content from parser"
-            responses_text.append(content)
+            # Handle both string and list content (multimodal messages)
+            if isinstance(content, str):
+                responses_text.append(content)
+            elif isinstance(content, list):
+                # For list content, extract text from content parts
+                text_parts = []
+                for c in content:
+                    if isinstance(c, dict):
+                        # Handle Content objects with 'text' field
+                        if "text" in c:
+                            text_parts.append(c["text"])
+                        elif "type" in c and c["type"] == "text" and "text" in c:
+                            text_parts.append(c["text"])
+                    elif isinstance(c, str):
+                        text_parts.append(c)
+                    else:
+                        text_parts.append(str(c))
+                responses_text.append("".join(text_parts))
+            else:
+                # Fallback to string conversion
+                logger.warning(f"Unexpected content type: {type(content)}, converting to string")
+                responses_text.append(str(content))
         all_choices = [
             InspectAIModelOutputChoice(
                 message=InspectAIChatMessageAssistant(content=r, model=self.model_name),
