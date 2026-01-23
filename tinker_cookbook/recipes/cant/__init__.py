@@ -8,7 +8,7 @@ A four-round self-evolution system featuring:
 - Round 4: Final verdict on revised solutions
 
 Rewards based on persuasion success (Bradley-Terry scoring), solution quality,
-consensus alignment, and improvement acceptance.
+and consensus alignment.
 """
 
 from tinker_cookbook.recipes.cant.env import CANTEnv, CANTEnvGroupBuilder

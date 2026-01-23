@@ -16,10 +16,9 @@ Usage:
 import asyncio
 import logging
 
-from inspect_ai import Task, task, task_with
+from inspect_ai import Task
 from inspect_ai.model import ChatMessageUser, ModelOutput
-from inspect_ai.solver import Generate, Solver, generate, solver
-from inspect_ai.solver import TaskState
+from inspect_ai.solver import Generate, Solver, TaskState, generate, solver
 
 from tinker_cookbook.recipes.cant.coordinator import CANTCoordinator
 from tinker_cookbook.recipes.cant.prompts import (
@@ -38,66 +37,27 @@ logger = logging.getLogger(__name__)
 
 
 @solver
-def cant_protocol_solver(num_agents: int = 4) -> Solver:
+def cant_protocol_solver(num_agents: int = 4, use_llm_summarization: bool = True) -> Solver:
     """
-    Generic solver that runs CANT 4-round multi-agent protocol.
+    CANT 4-round multi-agent protocol with memory buffering.
 
-    This solver can be composed with ANY Inspect AI task. It runs the full
-    CANT discussion protocol on the input, generates a solution through
-    multi-agent collaboration, and returns the highest-ranked solution.
-
-    The solver is designed to be used as the first solver in a chain,
-    followed by any task-specific solvers.
-
-    Args:
-        num_agents: Number of agents to participate in the discussion
-
-    Returns:
-        Solver function that executes the CANT protocol
-
-    Example:
-        @task
-        def my_task():
-            return Task(
-                dataset=my_dataset,
-                solver=[cant_protocol_solver(num_agents=4), generate()],
-                scorer=my_scorer(),
-            )
+    Requires OPENROUTER_API_KEY if use_llm_summarization=True.
     """
 
     async def solve(state: TaskState, generate: Generate) -> TaskState:
-        """
-        Run CANT protocol and return highest-ranked solution.
-
-        1. Round 0: Each agent proposes initial solution
-        2. Round 1: Agents rank and critique solutions
-        3. Round 2: Agents revise their solutions
-        4. Round 3: Agents provide final rankings
-        5. Return highest-ranked solution for standard evaluation
-        """
-        question = state.input_text
-
-        # Initialize coordinator
-        coordinator = CANTCoordinator(
-            question=question,
-            num_agents=num_agents,
-        )
-
-        # Get agent personas
+        coordinator = CANTCoordinator(question=state.input_text, num_agents=num_agents)
         personas = get_default_agent_personas()
 
-        # Run 4 rounds for all agents
         try:
-            await _run_cant_protocol(coordinator, num_agents, personas, generate, state)
+            await _run_cant_protocol(
+                coordinator, num_agents, personas, generate, state, use_llm_summarization
+            )
         except Exception as e:
             logger.error(f"Error running CANT protocol: {e}", exc_info=True)
             state.output = ModelOutput.from_content(model="cant", content="[ERROR]")
             return state
 
-        # Select final answer (highest ranked)
         final_answer = _select_highest_ranked_solution(coordinator)
-
-        # Return for standard evaluation
         state.output = ModelOutput.from_content(model="cant", content=final_answer)
         return state
 
@@ -110,10 +70,32 @@ async def _run_cant_protocol(
     personas: list[str],
     generate: Generate,
     state: TaskState,
+    use_llm_summarization: bool = True,
 ) -> None:
-    """Execute full 4-round CANT protocol."""
-
+    """Execute 4-round CANT protocol with memory buffering."""
+    import os
     from copy import deepcopy
+
+    from tinker_cookbook.completers import OpenRouterMessageCompleter
+    from tinker_cookbook.recipes.cant.memory_buffer import (
+        DEFAULT_MAX_SOLUTION_TOKENS,
+        DEFAULT_SUMMARIZATION_MODEL,
+        buffer_critiques,
+        buffer_solutions,
+    )
+
+    openrouter_completer = None
+    if use_llm_summarization:
+        api_key = os.getenv("OPENROUTER_API_KEY")
+        if not api_key:
+            raise ValueError("use_llm_summarization=True requires OPENROUTER_API_KEY")
+
+        openrouter_completer = OpenRouterMessageCompleter(
+            api_key=api_key,
+            model_name=DEFAULT_SUMMARIZATION_MODEL,
+            max_tokens=DEFAULT_MAX_SOLUTION_TOKENS,
+            temperature=0.8,
+        )
 
     # Round 0: Initial proposals (parallel agent execution)
     agent_states = []
@@ -134,6 +116,14 @@ async def _run_cant_protocol(
         response_text = response.output.completion if response.output else ""
         coordinator.add_round1_response(agent_id, response_text)
 
+    if use_llm_summarization:
+        buffered_initial = await buffer_solutions(
+            coordinator.initial_solutions,
+            openrouter_completer,
+            use_llm_summarization=use_llm_summarization,
+        )
+        coordinator.set_buffered_initial_solutions(buffered_initial)
+
     # Advance to Round 1
     coordinator.advance_round()
 
@@ -142,7 +132,7 @@ async def _run_cant_protocol(
     for agent_id in range(num_agents):
         system_prompt = get_round2_system_prompt(personas[agent_id % len(personas)])
         user_message = get_user_message_round2(
-            coordinator.question, coordinator.get_initial_solutions()
+            coordinator.question, coordinator.get_initial_solutions(buffered=use_llm_summarization)
         )
 
         agent_state = deepcopy(state)
@@ -156,6 +146,14 @@ async def _run_cant_protocol(
     for agent_id, response in enumerate(responses):
         response_text = response.output.completion if response.output else ""
         coordinator.add_round2_response(agent_id, response_text)
+
+    if use_llm_summarization:
+        buffered_critiques = await buffer_critiques(
+            coordinator.critique_texts,
+            openrouter_completer,
+            use_llm_summarization=use_llm_summarization,
+        )
+        coordinator.set_buffered_critique_texts(buffered_critiques)
 
     # Advance to Round 2
     coordinator.advance_round()
@@ -166,9 +164,9 @@ async def _run_cant_protocol(
         system_prompt = get_round3_system_prompt(personas[agent_id % len(personas)])
         user_message = get_user_message_round3(
             coordinator.question,
-            coordinator.get_initial_solutions(),
+            coordinator.get_initial_solutions(buffered=use_llm_summarization),
             agent_id,
-            coordinator.critique_texts,
+            coordinator.get_critiques_for_agent(agent_id, buffered=use_llm_summarization),
         )
 
         agent_state = deepcopy(state)
@@ -182,6 +180,14 @@ async def _run_cant_protocol(
     for agent_id, response in enumerate(responses):
         response_text = response.output.completion if response.output else ""
         coordinator.add_round3_response(agent_id, response_text)
+
+    if use_llm_summarization:
+        buffered_revised = await buffer_solutions(
+            coordinator.revised_solutions,
+            openrouter_completer,
+            use_llm_summarization=use_llm_summarization,
+        )
+        coordinator.set_buffered_revised_solutions(buffered_revised)
 
     # Advance to Round 3
     coordinator.advance_round()
@@ -191,8 +197,7 @@ async def _run_cant_protocol(
     for agent_id in range(num_agents):
         system_prompt = get_round4_system_prompt(personas[agent_id % len(personas)])
         user_message = get_user_message_round4(
-            coordinator.question,
-            coordinator.revised_solutions,
+            coordinator.question, coordinator.get_revised_solutions(buffered=use_llm_summarization)
         )
 
         agent_state = deepcopy(state)
@@ -210,60 +215,7 @@ async def _run_cant_protocol(
     # Mark protocol complete
     coordinator.advance_round()
 
-    # Round 1: Critique and ranking
-    for agent_id in range(num_agents):
-        system_prompt = get_round2_system_prompt(personas[agent_id % len(personas)])
-        user_message = get_user_message_round2(
-            coordinator.question, coordinator.get_initial_solutions()
-        )
-
-        agent_state = state
-        agent_state.messages = [ChatMessageUser(content=system_prompt + "\n\n" + user_message)]
-        response = await generate(agent_state)
-
-        response_text = response.output.completion if response.output else ""
-        coordinator.add_round2_response(agent_id, response_text)
-
-    # Advance to Round 2
-    coordinator.advance_round()
-
-    # Round 2: Revision
-    for agent_id in range(num_agents):
-        system_prompt = get_round3_system_prompt(personas[agent_id % len(personas)])
-        user_message = get_user_message_round3(
-            coordinator.question,
-            coordinator.get_initial_solutions(),
-            agent_id,
-            coordinator.critique_texts,
-        )
-
-        agent_state = state
-        agent_state.messages = [ChatMessageUser(content=system_prompt + "\n\n" + user_message)]
-        response = await generate(agent_state)
-
-        response_text = response.output.completion if response.output else ""
-        coordinator.add_round3_response(agent_id, response_text)
-
-    # Advance to Round 3
-    coordinator.advance_round()
-
-    # Round 3: Final ranking
-    for agent_id in range(num_agents):
-        system_prompt = get_round4_system_prompt(personas[agent_id % len(personas)])
-        user_message = get_user_message_round4(
-            coordinator.question,
-            coordinator.revised_solutions,
-        )
-
-        agent_state = state
-        agent_state.messages = [ChatMessageUser(content=system_prompt + "\n\n" + user_message)]
-        response = await generate(agent_state)
-
-        response_text = response.output.completion if response.output else ""
-        coordinator.add_round4_response(agent_id, response_text)
-
-    # Mark protocol complete
-    coordinator.advance_round()
+    
 
 
 def _select_highest_ranked_solution(coordinator: CANTCoordinator) -> str:
@@ -290,22 +242,12 @@ def _select_highest_ranked_solution(coordinator: CANTCoordinator) -> str:
             return list(coordinator.initial_solutions.values())[0]
         return "[NO SOLUTION GENERATED]"
 
-    # Count ranking positions for each agent
-    agent_scores: dict[int, float] = {i: 0.0 for i in range(coordinator.num_agents)}
+    from tinker_cookbook.recipes.cant.bradley_terry import compute_scores_from_rankings
 
-    for ranker_id, rankings in coordinator.final_rankings.items():
-        # rankings is list of (agent_id, justification, rank)
-        for agent_id, _, rank in rankings:
-            # Lower rank is better (1 is best)
-            # Convert to score where higher is better
-            agent_scores[agent_id] += coordinator.num_agents - rank + 1
-
-    # Find agent with highest score
-    if not agent_scores:
-        # Fallback
+    scores = compute_scores_from_rankings(coordinator.final_rankings, coordinator.num_agents)
+    if scores.size == 0:
         return list(coordinator.revised_solutions.values())[0]
-
-    best_agent_id = max(agent_scores.items(), key=lambda x: x[1])[0]
+    best_agent_id = int(scores.argmax())
 
     # Return their revised solution
     return coordinator.revised_solutions.get(best_agent_id, "[NO SOLUTION]")

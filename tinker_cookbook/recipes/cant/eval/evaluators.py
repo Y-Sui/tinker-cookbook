@@ -56,7 +56,8 @@ class CANTEvaluatorBuilder(InspectEvaluatorBuilder):
 
     # CANT protocol vs baseline
     use_cant_protocol: bool = True
-    num_agents: int = 4  # Only used if use_cant_protocol=True
+    num_agents: int = 4
+    use_llm_summarization: bool = True
 
     def __call__(self) -> SamplingClientEvaluator:
         """Build evaluator with configured tasks."""
@@ -68,7 +69,10 @@ class CANTEvaluatorBuilder(InspectEvaluatorBuilder):
         # For baseline, we pass no solver (uses task's default)
         config = chz.replace(self, tasks=tasks)
         return CANTInspectEvaluator(
-            config, use_cant_protocol=self.use_cant_protocol, num_agents=self.num_agents
+            config,
+            use_cant_protocol=self.use_cant_protocol,
+            num_agents=self.num_agents,
+            use_llm_summarization=self.use_llm_summarization,
         )
 
 
@@ -81,19 +85,16 @@ class CANTInspectEvaluator(InspectEvaluator):
     """
 
     def __init__(
-        self, config: InspectEvaluatorBuilder, use_cant_protocol: bool = False, num_agents: int = 4
+        self,
+        config: InspectEvaluatorBuilder,
+        use_cant_protocol: bool = False,
+        num_agents: int = 4,
+        use_llm_summarization: bool = True,
     ):
-        """
-        Initialize CANT Inspect evaluator.
-
-        Args:
-            config: Evaluator configuration
-            use_cant_protocol: If True, uses CANT protocol solver
-            num_agents: Number of agents for CANT protocol
-        """
         super().__init__(config)
         self.use_cant_protocol = use_cant_protocol
         self.num_agents = num_agents
+        self.use_llm_summarization = use_llm_summarization
 
     async def __call__(self, sampling_client):
         """
@@ -151,7 +152,9 @@ class CANTInspectEvaluator(InspectEvaluator):
             from tinker_cookbook.recipes.cant.eval.inspect_tasks import cant_protocol_solver
 
             logger.info(f"Using CANT protocol solver with {self.num_agents} agents")
-            eval_params["solver"] = cant_protocol_solver(self.num_agents)
+            eval_params["solver"] = cant_protocol_solver(
+                self.num_agents, use_llm_summarization=self.use_llm_summarization
+            )
 
         # Debug: Log what we're passing to eval_async
         logger.info(f"Passing tasks to eval_async: {eval_params['tasks']}")

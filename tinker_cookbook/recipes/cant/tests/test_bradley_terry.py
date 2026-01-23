@@ -77,9 +77,11 @@ def test_compute_scores_from_rankings():
 
 
 def test_bradley_terry_invalid_indices():
-    """Test that invalid indices raise ValueError."""
-    with pytest.raises(ValueError):
-        compute_bradley_terry_scores([(0, 5)], num_agents=4)
+    """Test that invalid indices are skipped and return neutral scores."""
+    scores = compute_bradley_terry_scores([(0, 5)], num_agents=4)
+    assert len(scores) == 4
+    assert all(abs(s - 0.5) < 0.01 for s in scores)
 
-    with pytest.raises(ValueError):
-        compute_bradley_terry_scores([(-1, 2)], num_agents=4)
+    scores = compute_bradley_terry_scores([(-1, 2)], num_agents=4)
+    assert len(scores) == 4
+    assert all(abs(s - 0.5) < 0.01 for s in scores)

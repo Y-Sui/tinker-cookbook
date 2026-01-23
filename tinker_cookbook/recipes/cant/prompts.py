@@ -209,14 +209,14 @@ def format_revised_solutions(solutions: dict[int, str]) -> str:
 
 def format_critiques_for_agent(
     agent_id: int,
-    critiques: dict[int, dict[int, str]]
+    critiques: dict[int, str] | dict[int, dict[int, str]],
 ) -> str:
     """
     Format critiques targeting a specific agent for Round 3 context.
 
     Args:
         agent_id: ID of the agent receiving critiques
-        critiques: Dict mapping {author_id: {target_id: critique_text}}
+        critiques: Dict mapping {author_id: critique_text} or {author_id: {target_id: text}}
 
     Returns:
         Formatted string showing all critiques directed at this agent
@@ -225,10 +225,14 @@ def format_critiques_for_agent(
 
     found_critiques = False
     for author_id, targets in critiques.items():
-        if agent_id in targets:
+        if isinstance(targets, dict):
+            if agent_id in targets:
+                found_critiques = True
+                critique_text = targets[agent_id]
+                formatted += f"--- From Agent {author_id} ---\n{critique_text}\n\n"
+        else:
             found_critiques = True
-            critique_text = targets[agent_id]
-            formatted += f"--- From Agent {author_id} ---\n{critique_text}\n\n"
+            formatted += f"--- From Agent {author_id} ---\n{targets}\n\n"
 
     if not found_critiques:
         formatted += "No critiques were directed at your solution.\n"

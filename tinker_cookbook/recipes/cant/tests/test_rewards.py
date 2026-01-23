@@ -6,7 +6,6 @@ from tinker_cookbook.recipes.cant.rewards import (
     compute_persuasion_rewards,
     compute_solution_rewards,
     compute_consensus_rewards,
-    compute_acceptance_rewards,
 )
 
 
@@ -62,18 +61,13 @@ def test_persuasion_rewards_backfire():
 
 
 def test_solution_rewards():
-    """Test solution quality reward (Z-score normalization)."""
+    """Test solution quality reward (raw Bradley-Terry scores)."""
     v_final = np.array([0.8, 0.5, 0.2, 0.5])
 
     r_sol = compute_solution_rewards(v_final)
 
     assert len(r_sol) == 4
-    # Mean should be ~0 after Z-score normalization
-    assert abs(np.mean(r_sol)) < 0.01
-    # Agent 0 (highest score) should have positive reward
-    assert r_sol[0] > 0
-    # Agent 2 (lowest score) should have negative reward
-    assert r_sol[2] < 0
+    assert np.allclose(r_sol, v_final.astype(np.float32))
 
 
 def test_solution_rewards_uniform():
@@ -82,8 +76,7 @@ def test_solution_rewards_uniform():
 
     r_sol = compute_solution_rewards(v_final)
 
-    # All zeros when no variance
-    assert all(abs(r) < 0.01 for r in r_sol)
+    assert np.allclose(r_sol, v_final.astype(np.float32))
 
 
 def test_consensus_rewards():
@@ -99,9 +92,9 @@ def test_consensus_rewards():
     # All agents vote but with different opinions
     # Each pair should have a majority vote
     assert len(r_meta) == 3
-    # Rewards should be in [-1, 1] range
+    # Rewards should be in [0, 1] range
     for reward in r_meta.values():
-        assert -1.0 <= reward <= 1.0
+        assert 0.0 <= reward <= 1.0
 
 
 def test_consensus_rewards_perfect():
@@ -116,21 +109,3 @@ def test_consensus_rewards_perfect():
 
     # Everyone agrees → perfect consensus → reward = 1.0
     assert all(abs(r - 1.0) < 0.01 for r in r_meta.values())
-
-
-def test_acceptance_rewards():
-    """Test acceptance reward for improvement."""
-    v_t0 = np.array([0.4, 0.6, 0.5, 0.7])
-    v_final = np.array([0.6, 0.5, 0.5, 0.8])  # Agents 0 and 3 improved
-
-    r_accept = compute_acceptance_rewards(v_t0, v_final, bonus=0.5)
-
-    assert len(r_accept) == 4
-    # Agent 0 improved → gets bonus
-    assert r_accept[0] == 0.5
-    # Agent 1 got worse → no bonus
-    assert r_accept[1] == 0.0
-    # Agent 2 stayed same → no bonus
-    assert r_accept[2] == 0.0
-    # Agent 3 improved → gets bonus
-    assert r_accept[3] == 0.5

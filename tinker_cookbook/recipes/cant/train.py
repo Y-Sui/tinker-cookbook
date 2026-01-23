@@ -69,9 +69,14 @@ class CANTConfig:
     max_questions: int = -1  # Max problems to load (-1 = all)
 
     # ============================================================================
+    # Memory Buffer Configuration
+    # ============================================================================
+    use_llm_summarization: bool = True  # Use OpenRouter LLM (google/gemini-flash-1.5, 4K buffer)
+
+    # ============================================================================
     # Evaluation Configuration
     # ============================================================================
-    eval_tasks: str | None = None  # e.g., "gsm8k,math,aime2024"
+    eval_tasks: str | None = None  # e.g., "inspect_evals/gsm8k,inspect_evals/math"
     eval_use_cant_protocol: bool = True  # False = baseline single-turn eval
     eval_num_agents: int | None = None  # Defaults to self.num_agents
     eval_temperature: float = 0.0
@@ -141,6 +146,7 @@ class CANTDatasetBuilder(RLDatasetBuilder):
     weight_disc: float
     weight_sol: float
     weight_meta: float
+    use_llm_summarization: bool
 
     async def __call__(self) -> tuple[RLDataset, RLDataset | None]:
         if not self.problem_states:
@@ -156,6 +162,7 @@ class CANTDatasetBuilder(RLDatasetBuilder):
             "weight_disc": self.weight_disc,
             "weight_sol": self.weight_sol,
             "weight_meta": self.weight_meta,
+            "use_llm_summarization": self.use_llm_summarization,
         }
         if self.num_train_datapoints < 0 or self.num_train_datapoints > len(self.problem_states):
             num_datapoints = len(self.problem_states) * self.epoch
@@ -224,6 +231,7 @@ def build_dataset_builder(
         weight_disc=config.weight_disc,
         weight_sol=config.weight_sol,
         weight_meta=config.weight_meta,
+        use_llm_summarization=config.use_llm_summarization,
     )
 
     return dataset_builder
@@ -277,6 +285,10 @@ async def main():
     print(f"  Beta (persuasion): {config.beta_disc}")
     print(f"  Log path: {log_path}")
 
+    if config.use_llm_summarization:
+        print("\nMemory buffer: LLM enabled (google/gemini-flash-1.5, 4K tokens)")
+        print("  Note: Requires OPENROUTER_API_KEY environment variable")
+
     # Build evaluator builders if configured
     evaluator_builders = []
     if config.eval_tasks and config.eval_every > 0:
@@ -286,7 +298,7 @@ async def main():
         task_names = [t.strip() for t in config.eval_tasks.split(",")]
 
         eval_mode = "CANT protocol" if config.eval_use_cant_protocol else "Baseline"
-        print(f"\nEvaluation configuration:")
+        print("\nEvaluation configuration:")
         print(f"  Mode: {eval_mode}")
         print(f"  Tasks: {', '.join(task_names)}")
         if config.eval_use_cant_protocol:

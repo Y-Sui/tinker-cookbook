@@ -57,6 +57,13 @@ class CANTCoordinator:
     final_rankings: dict[int, list[tuple[int, str, int]]] = field(default_factory=dict)
     round4_responses: dict[int, Round4Response] = field(default_factory=dict)
 
+    # Memory buffer: Compressed versions for context window management
+    buffered_initial_solutions: dict[int, str] = field(default_factory=dict)
+    buffered_revised_solutions: dict[int, str] = field(default_factory=dict)
+
+    # NEW: Buffered critiques for context efficiency
+    buffered_critique_texts: dict[int, dict[int, str]] = field(default_factory=dict)
+
     # Reward computation results (populated after episode ends)
     rewards_computed: bool = False
     bradley_terry_scores_t0: dict[int, float] = field(default_factory=dict)
@@ -143,25 +150,65 @@ class CANTCoordinator:
             return len(self.round4_responses) == self.num_agents
         return False
 
-    def get_initial_solutions(self) -> dict[int, str]:
-        """Get all initial solutions (for Round 2 context)."""
+    def get_initial_solutions(self, buffered: bool = False) -> dict[int, str]:
+        """
+        Get initial solutions from Round 0.
+
+        Args:
+            buffered: If True, return LLM-summarized versions for context.
+                     If False, return full original versions.
+
+        Returns:
+            Dict of agent_id -> solution text
+        """
+        if buffered and self.buffered_initial_solutions:
+            return self.buffered_initial_solutions.copy()
         return self.initial_solutions.copy()
 
-    def get_critiques_for_agent(self, agent_id: int) -> dict[int, str]:
+    def set_buffered_initial_solutions(self, buffered: dict[int, str]) -> None:
+        """Store LLM-summarized versions of initial solutions."""
+        self.buffered_initial_solutions = buffered
+
+    def get_revised_solutions(self, buffered: bool = False) -> dict[int, str]:
+        """
+        Get revised solutions from Round 2.
+
+        Args:
+            buffered: If True, return LLM-summarized versions for context.
+                     If False, return full original versions.
+
+        Returns:
+            Dict of agent_id -> revised solution text
+        """
+        if buffered and self.buffered_revised_solutions:
+            return self.buffered_revised_solutions
+        return self.revised_solutions
+
+    def set_buffered_revised_solutions(self, buffered: dict[int, str]) -> None:
+        """Store LLM-summarized versions of revised solutions."""
+        self.buffered_revised_solutions = buffered
+
+    def get_critiques_for_agent(self, agent_id: int, buffered: bool = False) -> dict[int, str]:
         """
         Get all critiques targeting a specific agent.
 
         Args:
             agent_id: ID of the agent receiving critiques
+            buffered: If True, return LLM-summarized critiques
 
         Returns:
             Dict mapping {author_id: critique_text} for critiques targeting this agent
         """
+        critiques_source = self.buffered_critique_texts if buffered else self.critique_texts
         critiques_received = {}
-        for author_id, targets in self.critique_texts.items():
+        for author_id, targets in critiques_source.items():
             if agent_id in targets:
                 critiques_received[author_id] = targets[agent_id]
         return critiques_received
+
+    def set_buffered_critique_texts(self, buffered: dict[int, dict[int, str]]) -> None:
+        """Store LLM-summarized critiques."""
+        self.buffered_critique_texts = buffered
 
     def compute_rewards(
         self,

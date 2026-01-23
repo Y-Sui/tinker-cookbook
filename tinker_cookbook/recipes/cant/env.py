@@ -2,14 +2,22 @@
 CANT environment for non-verifiable tasks (general Q&A, creative writing, etc.).
 """
 
+import logging
 from dataclasses import dataclass, field
 from typing import Sequence
 
 import numpy as np
 from tinker import types
 
-from tinker_cookbook.completers import StopCondition as StopConditionType
+from tinker_cookbook.completers import (
+    OpenRouterMessageCompleter,
+)
+from tinker_cookbook.completers import (
+    StopCondition as StopConditionType,
+)
 from tinker_cookbook.recipes.cant.coordinator import CANTCoordinator
+
+logger = logging.getLogger(__name__)
 from tinker_cookbook.recipes.cant.prompts import (
     get_default_agent_personas,
     get_round1_system_prompt,
@@ -38,15 +46,13 @@ STOP_CONDITION: StopConditionType = []
 @dataclass
 class CANTEnv(Env):
     """
-    Environment for one agent in the CANT (Critique and Revision) protocol.
+    Environment for a single agent in CANT protocol.
 
-    The CANT protocol has four rounds:
+    Each agent proceeds through 4 rounds:
     - Round 0: Generate initial solution
-    - Round 1: Provide blind ranking + targeted critiques
-    - Round 2: Revise solution
+    - Round 1: Rank and critique other solutions
+    - Round 2: Revise own solution
     - Round 3: Provide final ranking of revised solutions
-
-    Each agent proceeds through rounds synchronously with other agents in the group.
     """
 
     agent_id: int
@@ -54,10 +60,45 @@ class CANTEnv(Env):
     renderer: Renderer
     persona: str | None = None
     max_response_tokens: int = 2048
+    openrouter_completer: OpenRouterMessageCompleter | None = None
+    use_llm_summarization: bool = True
 
     # Track current step within the episode
     _step_count: int = field(default=0, init=False)
     _episode_done: bool = field(default=False, init=False)
+
+    async def _buffer_initial_solutions(self) -> None:
+        """Buffer initial solutions after Round 0."""
+        from tinker_cookbook.recipes.cant.memory_buffer import buffer_solutions
+
+        buffered = await buffer_solutions(
+            self.coordinator.initial_solutions,
+            self.openrouter_completer,
+            use_llm_summarization=self.use_llm_summarization,
+        )
+        self.coordinator.set_buffered_initial_solutions(buffered)
+
+    async def _buffer_critiques(self) -> None:
+        """Buffer critiques after Round 1."""
+        from tinker_cookbook.recipes.cant.memory_buffer import buffer_critiques
+
+        buffered = await buffer_critiques(
+            self.coordinator.critique_texts,
+            self.openrouter_completer,
+            use_llm_summarization=self.use_llm_summarization,
+        )
+        self.coordinator.set_buffered_critique_texts(buffered)
+
+    async def _buffer_revised_solutions(self) -> None:
+        """Buffer revised solutions after Round 2."""
+        from tinker_cookbook.recipes.cant.memory_buffer import buffer_solutions
+
+        buffered = await buffer_solutions(
+            self.coordinator.revised_solutions,
+            self.openrouter_completer,
+            use_llm_summarization=self.use_llm_summarization,
+        )
+        self.coordinator.set_buffered_revised_solutions(buffered)
 
     async def initial_observation(self) -> tuple[Observation, StopConditionType]:
         """Get the initial observation (Round 0: Proposal)."""
@@ -75,23 +116,26 @@ class CANTEnv(Env):
         elif current_round == 1:
             system_prompt = get_round2_system_prompt(self.persona)
             user_message = get_user_message_round2(
-                self.coordinator.question, self.coordinator.get_initial_solutions()
+                self.coordinator.question,
+                self.coordinator.get_initial_solutions(buffered=self.use_llm_summarization),
             )
 
         elif current_round == 2:
             system_prompt = get_round3_system_prompt(self.persona)
             user_message = get_user_message_round3(
                 self.coordinator.question,
-                self.coordinator.get_initial_solutions(),
+                self.coordinator.get_initial_solutions(buffered=self.use_llm_summarization),
                 self.agent_id,
-                self.coordinator.critique_texts,
+                self.coordinator.get_critiques_for_agent(
+                    self.agent_id, buffered=self.use_llm_summarization
+                ),
             )
 
         elif current_round == 3:
             system_prompt = get_round4_system_prompt(self.persona)
             user_message = get_user_message_round4(
                 self.coordinator.question,
-                self.coordinator.revised_solutions,
+                self.coordinator.get_revised_solutions(buffered=self.use_llm_summarization),
             )
 
         else:
@@ -138,9 +182,13 @@ class CANTEnv(Env):
         # Increment step count
         self._step_count += 1
 
-        # Check if we can advance to next round
-        # In synchronous execution, all agents must complete current round
         if self.coordinator.can_advance_round():
+            if current_round == 0 and self.use_llm_summarization:
+                await self._buffer_initial_solutions()
+            elif current_round == 1 and self.use_llm_summarization:
+                await self._buffer_critiques()
+            elif current_round == 2 and self.use_llm_summarization:
+                await self._buffer_revised_solutions()
             self.coordinator.advance_round()
 
         # Check if episode is complete (all rounds done)
@@ -201,6 +249,7 @@ class CANTEnvGroupBuilder(EnvGroupBuilder):
     # Environment configuration
     personas: list[str] | None = field(default=None, kw_only=True)
     max_response_tokens: int = field(default=2048, kw_only=True)
+    use_llm_summarization: bool = field(default=True, kw_only=True)
 
     def logging_tags(self) -> list[str]:
         dataset_name = self.problem_state.get("dataset_name")
@@ -218,6 +267,27 @@ class CANTEnvGroupBuilder(EnvGroupBuilder):
         Returns:
             List of CANTEnv instances (one per agent)
         """
+        import os
+
+        # Create OpenRouter completer for memory buffering if LLM summarization enabled
+        openrouter_completer = None
+        if self.use_llm_summarization:
+            api_key = os.getenv("OPENROUTER_API_KEY")
+            if not api_key:
+                raise ValueError("use_llm_summarization=True requires OPENROUTER_API_KEY")
+
+            from tinker_cookbook.recipes.cant.memory_buffer import (
+                DEFAULT_MAX_SOLUTION_TOKENS,
+                DEFAULT_SUMMARIZATION_MODEL,
+            )
+
+            openrouter_completer = OpenRouterMessageCompleter(
+                api_key=api_key,
+                model_name=DEFAULT_SUMMARIZATION_MODEL,
+                max_tokens=DEFAULT_MAX_SOLUTION_TOKENS,
+                temperature=0.8,
+            )
+
         question = self.problem_state["question"]
         answer = self.problem_state.get("answer")
 
@@ -239,6 +309,8 @@ class CANTEnvGroupBuilder(EnvGroupBuilder):
                 renderer=self.renderer,
                 persona=persona,
                 max_response_tokens=self.max_response_tokens,
+                openrouter_completer=openrouter_completer,
+                use_llm_summarization=self.use_llm_summarization,
             )
             envs.append(env)
 
@@ -256,7 +328,7 @@ class CANTEnvGroupBuilder(EnvGroupBuilder):
         1. r_disc: Persuasion rewards (did critiques lower targets' scores?)
         2. r_sol: Solution quality (Bradley-Terry scores, Z-normalized)
         3. r_meta: Consensus alignment (match majority opinion)
-        4. r_accept: Acceptance rewards (did agent improve?)
+        4. r_meta: Consensus alignment (match majority opinion)
 
         Args:
             trajectory_group: Trajectories for all agents
