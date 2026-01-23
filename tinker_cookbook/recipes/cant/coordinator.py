@@ -45,7 +45,9 @@ class CANTCoordinator:
     # Round 1: Blind rankings and critiques
     blind_rankings: dict[int, list[tuple[int, str, int]]] = field(default_factory=dict)
     critiques: dict[int, list[int]] = field(default_factory=dict)  # {author: [targets]}
-    critique_texts: dict[int, dict[int, str]] = field(default_factory=dict)  # {author: {target: text}}
+    critique_texts: dict[int, dict[int, str]] = field(
+        default_factory=dict
+    )  # {author: {target: text}}
     round2_responses: dict[int, Round2Response] = field(default_factory=dict)
 
     # Round 2: Revised solutions
@@ -167,48 +169,29 @@ class CANTCoordinator:
         weight_disc: float = 2.0,
         weight_sol: float = 1.0,
         weight_meta: float = 1.0,
-        weight_accept: float = 0.5,
     ) -> dict[int, dict[str, float]]:
-        """
-        Compute all reward components after episode completion.
-
-        Args:
-            beta_disc: Scaling factor for persuasion rewards
-            weight_disc: Weight for persuasion component
-            weight_sol: Weight for solution component
-            weight_meta: Weight for consensus component
-            weight_accept: Weight for acceptance component
-
-        Returns:
-            Dict mapping agent_id to reward breakdown
-        """
+        """Compute reward components after episode completion."""
         from tinker_cookbook.recipes.cant.rewards import compute_all_rewards, combine_rewards
 
-        # Compute all reward components
         results = compute_all_rewards(
             critiques=self.critiques,
             blind_rankings=self.blind_rankings,
             final_rankings=self.final_rankings,
             num_agents=self.num_agents,
             beta_disc=beta_disc,
-            bonus_accept=weight_accept,  # Pass bonus value directly
         )
 
-        # Store BT scores for analysis
         for agent_id in range(self.num_agents):
-            self.bradley_terry_scores_t0[agent_id] = float(results['v_t0'][agent_id])
-            self.bradley_terry_scores_final[agent_id] = float(results['v_final'][agent_id])
+            self.bradley_terry_scores_t0[agent_id] = float(results["v_t0"][agent_id])
+            self.bradley_terry_scores_final[agent_id] = float(results["v_final"][agent_id])
 
-        # Combine rewards with weights
         self.reward_breakdown = combine_rewards(
-            r_disc=results['r_disc'],
-            r_sol=results['r_sol'],
-            r_meta=results['r_meta'],
-            r_accept=results['r_accept'],
+            r_disc=results["r_disc"],
+            r_sol=results["r_sol"],
+            r_meta=results["r_meta"],
             weight_disc=weight_disc,
             weight_sol=weight_sol,
             weight_meta=weight_meta,
-            weight_accept=weight_accept,
         )
 
         self.rewards_computed = True
@@ -238,24 +221,26 @@ class CANTCoordinator:
             Dict containing episode statistics
         """
         summary = {
-            'question': self.question,
-            'num_agents': self.num_agents,
-            'current_round': self.current_round,
-            'is_complete': self.is_complete(),
-            'num_initial_solutions': len(self.initial_solutions),
-            'num_critiques_total': sum(len(targets) for targets in self.critiques.values()),
-            'num_revised_solutions': len(self.revised_solutions),
+            "question": self.question,
+            "num_agents": self.num_agents,
+            "current_round": self.current_round,
+            "is_complete": self.is_complete(),
+            "num_initial_solutions": len(self.initial_solutions),
+            "num_critiques_total": sum(len(targets) for targets in self.critiques.values()),
+            "num_revised_solutions": len(self.revised_solutions),
         }
 
         if self.rewards_computed:
-            summary.update({
-                'bt_scores_t0': self.bradley_terry_scores_t0,
-                'bt_scores_final': self.bradley_terry_scores_final,
-                'total_rewards': {
-                    agent_id: self.get_total_reward(agent_id)
-                    for agent_id in range(self.num_agents)
-                },
-            })
+            summary.update(
+                {
+                    "bt_scores_t0": self.bradley_terry_scores_t0,
+                    "bt_scores_final": self.bradley_terry_scores_final,
+                    "total_rewards": {
+                        agent_id: self.get_total_reward(agent_id)
+                        for agent_id in range(self.num_agents)
+                    },
+                }
+            )
 
         return summary
 
