@@ -55,6 +55,8 @@ _VERIFIABLE_DATASETS = {
     "gsm8k",
     "aime2024",
     "aime2025",
+    "deepmath",
+    "gpqa",
 }
 
 
@@ -62,8 +64,7 @@ def load_non_verifiable_dataset_states(name: str, max_count: int) -> list[dict]:
     dataset = _NON_VERIFIABLE_DATASETS.get(name)
     if dataset is None:
         raise ValueError(
-            f"Unknown non-verifiable dataset: {name}. "
-            f"Supported: {sorted(_NON_VERIFIABLE_DATASETS)}"
+            f"Unknown non-verifiable dataset: {name}. Supported: {sorted(_NON_VERIFIABLE_DATASETS)}"
         )
     problems = _slice_records(_load_jsonl(dataset["path"]), max_count)
     return [
@@ -142,13 +143,7 @@ def _load_jsonl_line(line: str) -> dict:
 
 def load_math_problems_from_hf(
     dataset_name: Literal[
-        "math",
-        "math500",
-        "polaris",
-        "deepmath",
-        "gsm8k",
-        "aime2024",
-        "aime2025",
+        "math", "math500", "polaris", "deepmath", "gsm8k", "aime2024", "aime2025", "deepmath"
     ],
     split: Literal["train", "test"] = "train",
     max_count: int = 1000,
@@ -156,6 +151,33 @@ def load_math_problems_from_hf(
     """Load verifiable math problems from HuggingFace datasets or local JSONL."""
     if dataset_name in {"aime2024", "aime2025"}:
         local_path = Path(__file__).resolve().parents[2] / "data" / f"{dataset_name}_sample.jsonl"
+        if not local_path.exists():
+            raise ValueError(f"Missing local dataset file: {local_path}")
+        return _load_math_problems_from_jsonl(
+            path=str(local_path),
+            problem_field="problem",
+            answer_field="answer",
+            dataset_name=dataset_name,
+            max_count=max_count,
+        )
+
+    if dataset_name == "deepmath":
+        local_path = (
+            Path(__file__).resolve().parents[2] / "data" / "deepmath_1410_level_9_10_sample.jsonl"
+        )
+        if not local_path.exists():
+            raise ValueError(f"Missing local dataset file: {local_path}")
+        return _load_math_problems_from_jsonl(
+            path=str(local_path),
+            problem_field="problem",
+            answer_field="answer",
+            dataset_name=dataset_name,
+            max_count=max_count,
+        )
+
+    if dataset_name == "gpqa":
+        local_path = Path(__file__).resolve().parents[2] / "data" / "gpqa_diamond_sample.jsonl"
+
         if not local_path.exists():
             raise ValueError(f"Missing local dataset file: {local_path}")
         return _load_math_problems_from_jsonl(

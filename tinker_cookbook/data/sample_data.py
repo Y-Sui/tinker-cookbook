@@ -27,20 +27,20 @@ from datasets import load_dataset
 #         )
 
 
-ds = load_dataset("HuggingFaceH4/aime_2024", split="train")
-with open("/ndata/yuansui/tinker-cookbook/tinker_cookbook/data/aime2024_sample.jsonl", "w") as f:
-    for item in ds:
-        f.write(
-            json.dumps(
-                {"query": item["problem"], "answer": item["answer"], "solution": item["solution"]}
-            )
-            + "\n"
-        )
+# ds = load_dataset("HuggingFaceH4/aime_2024", split="train")
+# with open("/ndata/yuansui/tinker-cookbook/tinker_cookbook/data/aime2024_sample.jsonl", "w") as f:
+#     for item in ds:
+#         f.write(
+#             json.dumps(
+#                 {"query": item["problem"], "answer": item["answer"], "solution": item["solution"]}
+#             )
+#             + "\n"
+#         )
 
-ds = load_dataset("MathArena/aime_2025", split="train")
-with open("/ndata/yuansui/tinker-cookbook/tinker_cookbook/data/aime2025_sample.jsonl", "w") as f:
-    for item in ds:
-        f.write(json.dumps({"query": item["problem"], "answer": item["answer"]}) + "\n")
+# ds = load_dataset("MathArena/aime_2025", split="train")
+# with open("/ndata/yuansui/tinker-cookbook/tinker_cookbook/data/aime2025_sample.jsonl", "w") as f:
+#     for item in ds:
+#         f.write(json.dumps({"query": item["problem"], "answer": item["answer"]}) + "\n")
 
 
 # ds = load_dataset("quehry/HelloBench", split="test")
@@ -110,3 +110,35 @@ with open("/ndata/yuansui/tinker-cookbook/tinker_cookbook/data/aime2025_sample.j
 #             )
 #             + "\n"
 #         )
+
+
+# 1. Load the dataset
+print("Loading dataset...")
+ds = load_dataset("zwhe99/DeepMath-103K", split="train")
+
+# 2. Filter for difficulty 6 to 10
+print("Filtering for difficulty 9-10...")
+filtered_ds = ds.filter(lambda x: 9 <= x["difficulty"] <= 10)
+
+# 3. Randomly sample 8k (or all if less than 8k exist)
+sample_size = 8000
+if len(filtered_ds) >= sample_size:
+    print(f"Sampling {sample_size} items...")
+    sampled_ds = filtered_ds.shuffle(seed=42).select(range(sample_size))
+else:
+    print(f"Warning: Only {len(filtered_ds)} items found. Using all.")
+    sampled_ds = filtered_ds
+
+# 4. Save to JSONL with the specified format
+output_path = (
+    "/ndata/yuansui/tinker-cookbook/tinker_cookbook/data/deepmath_8k_level_9_10_sample.jsonl"
+)
+print(f"Saving to {output_path}...")
+
+with open(output_path, "w") as f:
+    for item in sampled_ds:
+        # Format: {"query": ..., "answer": ...}
+        entry = {"query": item["question"], "answer": item["final_answer"]}
+        f.write(json.dumps(entry) + "\n")
+
+print("Process complete.")
