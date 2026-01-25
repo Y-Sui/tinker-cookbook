@@ -8,9 +8,7 @@ answers for evaluation.
 from dataclasses import dataclass, field
 from typing import Sequence
 
-from tinker_cookbook.recipes.cant.coordinator import CANTCoordinator
 from tinker_cookbook.recipes.cant.env import CANTEnv, CANTEnvGroupBuilder
-from tinker_cookbook.recipes.cant.prompts import get_default_agent_personas
 from tinker_cookbook.rl.types import Env, Trajectory
 
 
@@ -62,25 +60,11 @@ class VerifiableCANTEnvGroupBuilder(CANTEnvGroupBuilder):
         if answer is None:
             raise ValueError("Verifiable environment requires 'answer' field in problem_state")
 
-        # Create shared coordinator with ground truth
-        coordinator = CANTCoordinator(
-            question=question,
-            num_agents=self.num_agents,
-            answer=answer,
-        )
+        envs = await super().make_envs()
 
-        # Create one environment per agent
-        personas = self.personas or get_default_agent_personas()
-        envs = []
-        for agent_id in range(self.num_agents):
-            env = VerifiableCANTEnv(
-                agent_id=agent_id,
-                coordinator=coordinator,
-                renderer=self.renderer,
-                persona=personas[agent_id % len(personas)],
-                max_response_tokens=self.max_response_tokens,
-            )
-            envs.append(env)
+        # Ensure coordinator includes ground truth for downstream use.
+        coordinator = envs[0].coordinator
+        coordinator.answer = answer
 
         return envs
 

@@ -268,10 +268,15 @@ class CANTEnvGroupBuilder(EnvGroupBuilder):
             List of CANTEnv instances (one per agent)
         """
         import os
+        from pathlib import Path
+
+        from dotenv import load_dotenv
 
         # Create OpenRouter completer for memory buffering if LLM summarization enabled
         openrouter_completer = None
         if self.use_llm_summarization:
+            repo_root = Path(__file__).resolve().parents[4]
+            load_dotenv(dotenv_path=repo_root / ".env", override=True)
             api_key = os.getenv("OPENROUTER_API_KEY")
             if not api_key:
                 raise ValueError("use_llm_summarization=True requires OPENROUTER_API_KEY")

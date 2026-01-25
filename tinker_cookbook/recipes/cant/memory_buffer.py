@@ -3,13 +3,17 @@
 import asyncio
 import logging
 
+from dotenv import load_dotenv
+
 from tinker_cookbook.completers import OpenRouterMessageCompleter
+
+load_dotenv(override=True)
 
 logger = logging.getLogger(__name__)
 
 # Hardcoded constants for consistency
 DEFAULT_SUMMARIZATION_MODEL = "google/gemini-2.5-flash-lite"
-DEFAULT_MAX_SOLUTION_TOKENS = 4000  # Target tokens per solution in buffered context
+DEFAULT_MAX_SOLUTION_TOKENS = 3000  # Target tokens per solution in buffered context
 MAX_RETRIES = 3
 
 SUMMARIZATION_PROMPT = """You are compressing a mathematical solution for multi-agent discussion.
